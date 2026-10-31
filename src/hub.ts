@@ -76,7 +76,7 @@ export interface FleetMessage {
   replyTo?: string;
 }
 
-export type AgentStatus = "starting" | "idle" | "busy" | "stopped";
+export type AgentStatus = "starting" | "idle" | "busy" | "waiting" | "stopped";
 
 /** A position on the bus that stays meaningful across rotations. */
 export interface BusCursor {
@@ -482,11 +482,14 @@ export class Hub {
     return path.join(this.dir, "paused");
   }
 
-  /** Pause the fleet and say so on the bus; pausing a paused fleet does nothing. */
-  pause(reason: string): void {
+  /**
+   * Pause the fleet and say so on the bus; pausing a paused fleet does nothing.
+   * `since` is the time of the first message to hold back.
+   */
+  pause(reason: string, since: number = Date.now()): void {
     this.ensureDir();
     try {
-      fs.writeFileSync(this.pausedFile, reason, { encoding: "utf8", flag: "wx" });
+      fs.writeFileSync(this.pausedFile, JSON.stringify({ reason, since }), { encoding: "utf8", flag: "wx" });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "EEXIST") return; // only the first caller announces it
       throw e;
@@ -503,13 +506,24 @@ export class Hub {
     fs.rmSync(this.pausedFile, { force: true });
   }
 
-  /** Why the fleet is paused, or null if it is running. */
-  pausedReason(): string | null {
+  private readPause(): { reason: string; since: number } | null {
     try {
-      return fs.readFileSync(this.pausedFile, "utf8");
+      return JSON.parse(fs.readFileSync(this.pausedFile, "utf8")) as { reason: string; since: number };
     } catch {
       return null;
     }
+  }
+
+  /** Why the fleet is paused, or null if it is running. */
+  pausedReason(): string | null {
+    return this.readPause()?.reason ?? null;
+  }
+
+  /** The agent messages this pause is holding back. */
+  heldMessages(): FleetMessage[] {
+    const pause = this.readPause();
+    if (!pause) return [];
+    return this.tailMessages(HOP_WINDOW).filter((m) => m.kind === "chat" && m.from !== "user" && m.ts >= pause.since);
   }
 
   /** Messages agents exchanged since the human last spoke, counted up to message `upTo` if given. */

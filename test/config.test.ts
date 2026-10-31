@@ -38,6 +38,18 @@ describe("fleet.json limits", () => {
   });
 });
 
+describe("fleet.json budget and approvals", () => {
+  it("reads them", () => {
+    write({ maxCost: 2.5, agents: [{ name: "a", approve: ["bash"] }] });
+    expect(loadFleetConfig(dir)).toMatchObject({ maxCost: 2.5, agents: [{ name: "a", approve: ["bash"] }] });
+  });
+
+  it("refuses a budget that is not a positive number", () => {
+    write({ maxCost: 0, agents: [] });
+    expect(() => loadFleetConfig(dir)).toThrow(/"maxCost" must be a positive number/);
+  });
+});
+
 describe("an invalid fleet.json", () => {
   it("is an error naming the file, not an empty fleet", () => {
     fs.writeFileSync(configPath(dir), "{ not json");

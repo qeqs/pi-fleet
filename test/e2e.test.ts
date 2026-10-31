@@ -80,6 +80,33 @@ function startFleet(name: string, args: string[], extraEnv: NodeJS.ProcessEnv = 
   return { proc, hub: new Hub(hubDir) };
 }
 
+/** The GUI's view of the fleet: what a page receives when it connects. */
+async function snapshot(port: string, token: string): Promise<Record<string, any>> {
+  const controller = new AbortController();
+  const res = await fetch(`http://127.0.0.1:${port}/events`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
+  const reader = res.body!.getReader();
+  let text = "";
+  for (;;) {
+    const { value } = await reader.read();
+    text += new TextDecoder().decode(value);
+    const m = /event: snapshot\ndata: (.*)\n\n/.exec(text);
+    if (m) {
+      controller.abort();
+      return JSON.parse(m[1]);
+    }
+  }
+}
+
+async function guiPost(port: string, token: string, route: string, body: unknown): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}${route}`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+}
+
+async function startGui(name: string, args: string[]): Promise<{ hub: Hub; port: string; token: string }> {
+  const { proc, hub } = startFleet(name, ["serve", ...args]);
+  const [, port, token] = await firstMatch(proc, /GUI: http:\/\/127\.0\.0\.1:(\d+)\/\?token=([\w-]+)/);
+  return { hub, port, token };
+}
+
 /** Ask an agent something and wait for the model to have been asked and the run to end. */
 async function exchange(hub: Hub, agent: string, text: string): Promise<LlmRequest> {
   hub.appendMessage({ from: "user", to: agent, kind: "chat", text });
@@ -120,7 +147,7 @@ beforeAll(async () => {
           baseUrl: `http://127.0.0.1:${llmPort}/v1`,
           apiKey: "fake",
           api: "openai-completions",
-          models: [{ id: "fake-1", name: "Fake", reasoning: false, input: ["text"], contextWindow: 131072, maxTokens: 2048, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+          models: [{ id: "fake-1", name: "Fake", reasoning: false, input: ["text"], contextWindow: 131072, maxTokens: 2048, cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 } }],
         },
       },
     }),
@@ -253,7 +280,7 @@ describe("fleet end to end", () => {
     expect(after.conversation).toContain("BANANA");
   }, 60000);
 
-  it("--fresh starts a new conversation", async () => {
+  it("starts a new conversation with --fresh", async () => {
     const first = startFleet("fresh", ["up", "--agent", "alice"]);
     await idle(first.hub, ["alice"]);
     await exchange(first.hub, "alice", "remember the word MANGO");
@@ -295,6 +322,8 @@ describe("fleet end to end", () => {
     const resumed = await until("the interrupted job to resume", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("You were restarted") && r.last.includes("the long job")));
     expect(resumed.conversation).toContain("DATE");
     await until("the message from while it was down", async () => (await llmLog()).find((r) => r.agent === "alice" && r.conversation.includes("sent while everything was down")));
+    const finished = (await llmLog()).filter((r) => r.agent === "alice" && r.last.includes("remember the word DATE"));
+    expect(finished).toHaveLength(1); // what was already done is not replayed
   }, 90000);
 
   it("a clean stop does not resume work by itself", async () => {
@@ -380,6 +409,70 @@ describe("fleet end to end", () => {
     const big = await until("big to be asked", () => asked("big"));
     expect(small.conversation).toContain('Fleet (you are "small")');
     expect(big.conversation).not.toContain('Fleet (you are "big")');
+  }, 60000);
+
+  it("lets a person answer an agent's question from the GUI", async () => {
+    const hubDir = path.join(tmp, "ask");
+    fs.mkdirSync(hubDir, { recursive: true });
+    const extensions = [path.join(ROOT, "test", "ask-extension.ts")];
+    fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ agents: [{ name: "alice", extensions }] }));
+    const { hub, port, token } = await startGui("ask", []);
+    await idle(hub, ["alice"]);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[ask]]" });
+
+    const question = await until("the question to reach the GUI", async () => (await snapshot(port, token)).questions[0]);
+    expect(question).toMatchObject({ agent: "alice", method: "select", title: "Which colour?", options: ["red", "green"] });
+    await until("alice to show as waiting", () => hub.readAgents().alice.status === "waiting");
+    expect(hub.tailMessages(20).some((m) => m.text.includes('agent "alice" is waiting for you: Which colour?'))).toBe(true);
+
+    expect((await guiPost(port, token, "/answer", { id: question.id, value: "green" })).status).toBe(200);
+    await until("the agent to get the answer", async () => (await llmLog()).find((r) => r.agent === "alice" && r.conversation.includes("the human chose green")));
+    await until("the question to clear", async () => (await snapshot(port, token)).questions.length === 0);
+    await idle(hub, ["alice"]);
+  }, 60000);
+
+  it("makes approved tools wait for a person, and blocks what a person declines", async () => {
+    const { hub, port, token } = await startGui("approve", ["--agent", "alice", "--approve", "fleet_agents"]);
+    await idle(hub, ["alice"]);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[guarded]]" });
+    const question = await until("the approval request", async () => (await snapshot(port, token)).questions[0]);
+    expect(question).toMatchObject({ method: "confirm", title: "Allow fleet_agents?" });
+
+    await guiPost(port, token, "/answer", { id: question.id, confirmed: false });
+    const after = await until("the tool to be blocked", async () => (await llmLog()).find((r) => r.agent === "alice" && r.conversation.includes("A person declined this tool call")));
+    expect(after.conversation).not.toContain("alice [");
+  }, 60000);
+
+  it("shows real token counts and pauses at the spending limit", async () => {
+    const { hub, port, token } = await startGui("budget", ["--agent", "alice", "--max-cost", "0.001"]);
+    await idle(hub, ["alice"]);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "hello there" });
+    await until("the budget pause", () => hub.pausedReason()?.includes("spending limit reached"));
+    const stats = hub.readStats().alice as { cost: number; tokens: { total: number } };
+    expect(stats.tokens.total).toBeGreaterThan(100);
+    expect(stats.cost).toBeGreaterThanOrEqual(0.001);
+    expect((await snapshot(port, token)).stats.alice.tokens.total).toBe(stats.tokens.total);
+
+    expect((await guiPost(port, token, "/budget", { dollars: 50 })).status).toBe(200);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "keep going" });
+    await until("the run after raising the limit", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("keep going")));
+    await idle(hub, ["alice"]);
+    expect(hub.pausedReason()).toBeNull();
+  }, 60000);
+
+  it("delivers held messages on request, so a chain continues where it stopped", async () => {
+    const { hub, port, token } = await startGui("held", ["--agent", "alice", "--agent", "bob", "--max-hops", "4"]);
+    await idle(hub, ["alice", "bob"]);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[pingpong alice bob]] go" });
+    await until("the pause", () => hub.pausedReason());
+    await until("a held message", async () => (await snapshot(port, token)).held > 0);
+    await idle(hub, ["alice", "bob"]);
+    const before = (await llmLog()).length;
+
+    const res = await guiPost(port, token, "/resume", {});
+    expect((await res.json()).delivered).toBeGreaterThan(0);
+    await until("the chain to continue", async () => (await llmLog()).length > before);
+    await until("the next pause: the hop count restarted", () => hub.pausedReason());
   }, 60000);
 
   it("pauses a ping-pong at the hop limit, and the human restarts the fleet", async () => {

@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentInfo, FleetMessage, ChannelConfig } from "./hub.ts";
 import type { ExtensionInfo, McpConfig } from "./pi-resources.ts";
+import type { Answer, Question } from "./questions.ts";
 
 export interface GuiSnapshot {
   agents: AgentInfo[];
@@ -24,6 +25,14 @@ export interface GuiSnapshot {
   channels: ChannelConfig[];
   /** Why the fleet is paused, if it is. */
   paused?: string | null;
+  /** How many agent messages the pause is holding back. */
+  held?: number;
+  /** Questions from agents that wait for an answer. */
+  questions?: Question[];
+  /** Last known session stats per agent. */
+  stats?: Record<string, Record<string, unknown>>;
+  /** Spending limit in dollars, if any. */
+  maxCost?: number;
 }
 
 /** RPC commands the GUI may proxy to an agent (whitelist). */
@@ -79,6 +88,12 @@ export interface GuiServerOptions {
   spawnAgent?: (spec: NewAgentSpec) => Promise<void>;
   /** Abort every run and pause the fleet; resolves with the number of agents told to stop. */
   stopAll?: () => Promise<number>;
+  /** Lift a pause and deliver what it held back; resolves with the number of messages. */
+  resumeHeld?: () => number;
+  /** Answer an agent's question. */
+  answer?: (id: string, answer: Answer) => void;
+  /** Change the spending limit. */
+  setBudget?: (dollars: number) => void;
   /** List the channels (named group chats). */
   getChannels?: () => ChannelConfig[];
   /** Create or update a channel. */
@@ -372,6 +387,50 @@ export class GuiServer {
           res.end(JSON.stringify({ ok: false, error: String(e) }));
         },
       );
+      return;
+    }
+    if (req.method === "POST" && url === "/resume") {
+      res.setHeader("Content-Type", "application/json");
+      if (!this.opts.resumeHeld) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ ok: false, error: "not available" }));
+        return;
+      }
+      res.end(JSON.stringify({ ok: true, delivered: this.opts.resumeHeld() }));
+      return;
+    }
+    if (req.method === "POST" && url === "/answer") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        res.setHeader("Content-Type", "application/json");
+        try {
+          const { id, ...answer } = JSON.parse(body) as { id: string } & Answer;
+          if (!id || !this.opts.answer) throw new Error("id required");
+          this.opts.answer(id, answer as Answer);
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+        }
+      });
+      return;
+    }
+    if (req.method === "POST" && url === "/budget") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        res.setHeader("Content-Type", "application/json");
+        try {
+          const { dollars } = JSON.parse(body) as { dollars: number };
+          if (!this.opts.setBudget) throw new Error("not available");
+          this.opts.setBudget(dollars);
+          res.end(JSON.stringify({ ok: true }));
+        } catch (e) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+        }
+      });
       return;
     }
     if (req.method === "GET" && url === "/channels") {

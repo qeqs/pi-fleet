@@ -21,6 +21,11 @@ Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
   in the roadmap. (Pull requests need `gh` or a token, which this environment does not have.)
 
 ## Progress log
+- 2026-11-01: Milestone 3 done (0.4.0). Demonstrated in `test/e2e.test.ts`: an agent's question
+  reaches the GUI and is answered through it (`lets a person answer`), and a fleet pauses at a
+  budget computed by pi from token usage (`shows real token counts`). Added approvals on pi's
+  `tool_call` hook, cost after every turn, `/budget`, delivery of held messages, and routing
+  decisions and agent DMs in the channel view.
 - 2026-11-01: Milestone 2 done (0.3.0). Demonstrated by `resumes the task after every process
   is killed, and loses no message` in `test/e2e.test.ts`: the supervisor and all agents are
   killed mid-task, a message is posted while everything is down, and after `fleet up` the

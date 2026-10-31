@@ -3,6 +3,8 @@
 //   "Routing task for #x"  -> calls route(); targets from `route=a,b` in the text,
 //                             else the SDLC default (user -> planner, otherwise nobody)
 //   [[slow N]]             -> streams for N seconds, keeping the agent busy
+//   [[ask]]                -> calls ask_human (from test/ask-extension.ts)
+//   [[guarded]]            -> calls fleet_agents, for testing approvals
 //   [[hang]]               -> never answers
 //   [[fail]]               -> answers with an error that pi does not retry
 //   [[runon]]              -> never ends the run: every turn calls another tool
@@ -47,6 +49,8 @@ function decide(agent, messages) {
     const respond = explicit ? explicit.split(",") : from === "user" ? ["planner"] : [];
     return tool("route", { channel: routing[1], respond, summary: `latest from ${from}` });
   }
+  if (user.includes("[[ask]]")) return tool("ask_human", {});
+  if (user.includes("[[guarded]]")) return tool("fleet_agents", {});
   if (user.includes("[[hang]]")) return { kind: "hang" };
   if (user.includes("[[fail]]")) return { kind: "fail" };
   const slow = /\[\[slow (\d+)\]\]/.exec(user);
@@ -60,7 +64,7 @@ function decide(agent, messages) {
 const chunk = (delta, finish = null) =>
   `data: ${JSON.stringify({ id: "fake", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
 
-async function stream(res, decision) {
+async function stream(res, decision, promptTokens) {
   if (decision.kind === "hang") return;
   if (decision.kind === "fail") {
     res.writeHead(400, { "Content-Type": "application/json" });
@@ -83,6 +87,8 @@ async function stream(res, decision) {
     res.write(chunk({ content: decision.text }));
     res.write(chunk({}, "stop"));
   }
+  const usage = { prompt_tokens: promptTokens, completion_tokens: 20, total_tokens: promptTokens + 20 };
+  res.write(`data: ${JSON.stringify({ id: "fake", object: "chat.completion.chunk", choices: [], usage })}\n\n`);
   res.write("data: [DONE]\n\n");
   res.end();
 }
@@ -105,7 +111,7 @@ const server = http.createServer((req, res) => {
       conversation: messages.map(textOf).join("\n"),
       decision: decision.kind === "tool" ? `${decision.name} ${JSON.stringify(decision.args)}` : decision.kind,
     });
-    await stream(res, decision);
+    await stream(res, decision, Math.ceil(body.length / 4));
   });
 });
 

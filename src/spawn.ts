@@ -24,6 +24,7 @@ export interface RpcClient {
   onExit: (code: number | null) => void;
   prompt(message: string, streamingBehavior?: StreamingBehavior): Promise<Record<string, unknown>>;
   sendCommand(cmd: Record<string, unknown>): Promise<Record<string, unknown>>;
+  write(rec: Record<string, unknown>): void;
   getState(): Promise<Record<string, unknown>>;
   getStats(): Promise<Record<string, unknown>>;
   setSessionName(name: string): Promise<Record<string, unknown>>;
@@ -129,7 +130,7 @@ export function killProcessTree(pid: number): void {
  * it over named pipes), then connect a PiRpcBridge client to those pipes.
  * The bridge survives the supervisor exiting, enabling detached mode + re-attach.
  */
-export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Limits, model?: string, lean = false, role?: string, extensions?: string[], sessionFile?: string): Promise<AgentHandle> {
+export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Limits, model?: string, lean = false, role?: string, extensions?: string[], sessionFile?: string, approve?: string[]): Promise<AgentHandle> {
   if (!isValidAgentName(name)) throw new Error(`invalid agent name "${name}": use letters, digits, "_" and "-" (not group, user or system)`);
   if (!fs.existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const logFile = path.resolve(hub.logFileFor(name)); // absolute: the bridge's cwd is hub.dir
@@ -165,6 +166,7 @@ export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Li
       PI_FLEET_ROOT: ROOT,
       PI_FLEET_MAX_TURNS: String(limits.maxTurns),
       PI_FLEET_MAX_HOPS: String(limits.maxHops),
+      PI_FLEET_APPROVE: (approve ?? []).join(","),
       ...(role ? { PI_FLEET_ROLE: role } : {}),
       ...(lean ? { PI_FLEET_LEAN: "1" } : {}),
     },

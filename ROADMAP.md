@@ -71,13 +71,13 @@ Linux and macOS have never been run, and the riskiest logic cannot be unit-teste
 
 ## 3. Human in the loop
 
-- [ ] Agent questions (`extension_ui_request`: select, confirm, input, editor) appear in the GUI and terminal and can be answered; today such an agent hangs
-- [ ] An agent waiting for you is shown as waiting, not busy
-- [ ] Optional approval rules per agent: risky tool calls wait for a human, using pi's `tool_call` hook
-- [ ] Cost is collected after each run and shown in the Usage tab and agent header
-- [ ] `--max-cost`: pause the fleet at a spending limit
-- [ ] After a pause, choose whether to deliver the held messages, so a long chain can continue where it stopped
-- [ ] Routing decisions and agent DMs are visible in the channel view
+- [x] Agent questions (`extension_ui_request`: select, confirm, input, editor) appear in the GUI and terminal and can be answered; today such an agent hangs
+- [x] An agent waiting for you is shown as waiting, not busy
+- [x] Optional approval rules per agent: risky tool calls wait for a human, using pi's `tool_call` hook
+- [x] Cost is collected after each run and shown in the Usage tab and agent header
+- [x] `--max-cost`: pause the fleet at a spending limit
+- [x] After a pause, choose whether to deliver the held messages, so a long chain can continue where it stopped
+- [x] Routing decisions and agent DMs are visible in the channel view
 
 **Done when:** an agent's question is answered from the GUI in an e2e test, and a fleet pauses at its budget using real token counts.
 

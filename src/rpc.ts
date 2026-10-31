@@ -294,6 +294,11 @@ export class PiRpcBridge {
     return this.send(cmd);
   }
 
+  /** Write a line that gets no response, such as an answer to one of pi's questions. */
+  write(rec: Record_): void {
+    if (!this.exited) this.inSocket.write(JSON.stringify(rec) + "\n", "utf8");
+  }
+
   /** Disconnect from the pipes. Does NOT kill the bridge (it may keep running). */
   close(): void {
     if (this.exited) return;

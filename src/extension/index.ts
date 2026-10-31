@@ -34,6 +34,9 @@ const STALL_MS = Number(process.env.PI_FLEET_STALL_MS ?? 5 * 60 * 1000);
 const REPEAT_LIMIT = 3;
 const FLEET_TOOLS = new Set(["fleet_send", "fleet_mention", "route"]);
 
+/** Tools this agent may only run once a person agrees (PI_FLEET_APPROVE, comma-separated). */
+export const APPROVE_TOOLS = new Set((process.env.PI_FLEET_APPROVE ?? "").split(",").map((t) => t.trim()).filter(Boolean));
+
 function buildRoster(hub: Hub, name: string, lean: boolean): string {
   const agents = Object.values(hub.readAgents()).filter((a) => a.name !== name);
   if (agents.length === 0) return lean ? "(no other agents yet)" : "(no other agents registered yet)";
@@ -214,7 +217,7 @@ export function admitMessage(m: FleetMessage, hub: Hub, maxHops: number): boolea
   }
   if (m.kind !== "chat" || hub.pausedReason() !== null) return false;
   if (maxHops === 0 || hub.agentHops(m.id) <= maxHops) return true;
-  hub.pause(`${maxHops} agent messages since your last message (limit: --max-hops)`);
+  hub.pause(`${maxHops} agent messages since your last message (limit: --max-hops)`, m.ts);
   return false;
 }
 
@@ -496,6 +499,12 @@ export default function (pi: ExtensionAPI) {
     return repeated;
   }
 
+  pi.on("tool_call", async (event, ctx) => {
+    if (!APPROVE_TOOLS.has(event.toolName)) return undefined;
+    const allowed = await ctx.ui.confirm(`Allow ${event.toolName}?`, JSON.stringify(event.input).slice(0, 300), { signal: ctx.signal });
+    return allowed ? undefined : { block: true, reason: "A person declined this tool call." };
+  });
+
   // Some models never end a run on their own. Counted here, not in the supervisor,
   // so the limits also hold in detached mode, when nobody is watching.
   pi.on("turn_end", (event, ctx) => {
@@ -760,6 +769,13 @@ export default function (pi: ExtensionAPI) {
         });
         sent.push(member);
       }
+      // the channel view shows this, so routing is not a black box
+      hub.appendMessage({
+        from: name,
+        to: params.channel,
+        kind: "activity",
+        text: `routed to ${[...sent, ...(params.respond.includes(name) ? [name] : [])].join(", ") || "nobody"}`,
+      });
       const note = unknown.length ? ` (unknown: ${unknown.join(", ")})` : "";
       const selfNote = params.respond.includes(name) ? ". You picked yourself: do that work once, now, then end your turn" : "";
       return {

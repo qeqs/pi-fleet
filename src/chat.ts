@@ -16,11 +16,14 @@ const COMMANDS: Record<string, string | undefined> = {
   stats: undefined,
   channel: undefined,
   stopall: undefined,
+  resume: undefined,
   quit: undefined,
   exit: undefined,
   new: "/new name [cwd] [model] [role]",
   stop: "/stop name",
   restart: "/restart name",
+  answer: "/answer name text",
+  budget: "/budget dollars",
 };
 
 export const CHAT_HELP = `  # text          post to the group
@@ -34,6 +37,9 @@ export const CHAT_HELP = `  # text          post to the group
   /stop name      stop an agent
   /restart name   restart an agent; it keeps its conversation
   /stopall        abort every run and pause the fleet until your next message
+  /resume         lift a pause and deliver the messages it held back
+  /answer name x  answer an agent's question
+  /budget N       change the spending limit, in dollars
   /quit           stop all and exit
   /help           this list`;
 

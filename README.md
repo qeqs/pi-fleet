@@ -77,11 +77,21 @@ fleet> # refactor the parser and add tests
   - **Stop all** (GUI button, or `/stopall` in the terminal) aborts every run, drops queued
     messages and pauses the fleet.
 
-  A paused fleet stays up, but agent messages stay on the bus and wake nobody; those held
-  messages are not delivered later. Your next message, to a channel or directly to an agent,
-  resumes the fleet and restarts the hop count. `0` turns a limit off. Both limits can also be
-  set in `fleet.json` (`maxTurns`, `maxHops`); a flag wins over the config, and agents that
-  re-attach keep the turn limit they started with.
+  - `--max-cost N`: at N dollars, every run is aborted and the fleet pauses. Cost is read
+    after each turn, so one turn can overshoot; it counts all spending recorded in this hub.
+    Raise it with `/budget N` or in Settings → Usage. It needs a supervisor attached.
+
+  A paused fleet stays up, but agent messages stay on the bus and wake nobody. Your next
+  message, to a channel or directly to an agent, resumes the fleet and restarts the hop count;
+  the held messages stay undelivered. To continue the chain instead, use **Resume and deliver**
+  in the GUI or `/resume` in the terminal. `0` turns a turn or hop limit off. All three can be
+  set in `fleet.json` (`maxTurns`, `maxHops`, `maxCost`); a flag wins over the config, and agents
+  that re-attach keep the turn limit they started with.
+- **Questions and approvals**: when an agent asks something (`ctx.ui.confirm`, `select`, `input`
+  or `editor`), it shows as waiting, the question appears at the top of the GUI and in `#group`,
+  and you answer there or with `/answer name text`. `--approve bash,write` (or `approve` per agent
+  in `fleet.json`) makes those tools ask first; declined calls are blocked. Nobody can answer
+  in detached mode, so an agent that asks waits until a supervisor re-attaches.
 - **Failures are visible**: a crashed agent is marked stopped with a notice in `#group`, and
   its channels move to a running member. A run that ends in a model error says so, and so does
   a model that stays silent mid-turn for 5 minutes (`PI_FLEET_STALL_MS`, `0` turns it off; only
@@ -162,6 +172,9 @@ Group chat input:
 | `/stop name` | stop an agent |
 | `/restart name` | restart an agent; it keeps its conversation |
 | `/stopall` | abort every run and pause the fleet until your next message |
+| `/resume` | lift a pause and deliver the messages it held back |
+| `/answer name text` | answer an agent's question |
+| `/budget N` | change the spending limit, in dollars |
 | `/help` | list these commands |
 | `/quit` | stop all, exit |
 
@@ -356,6 +369,7 @@ src/commands.ts        one-shot commands (list/stop/log/init/config/templates/re
 src/chat.ts            the terminal chat's input language
 src/doctor.ts          fleet doctor: checks a setup
 src/restart.ts         when to bring a crashed agent back
+src/questions.ts       questions from agents to the human
 src/rpc.ts             pi RPC client (JSONL) — direct child + named-pipe bridge client
 src/bridge.ts          detached bridge process owning a pi child over named pipes
 src/hub.ts             file-based message bus + agent registry (+ rotation, stats, heartbeat)

@@ -19,6 +19,12 @@
   header button.danger:hover{border-color:var(--red);color:var(--red)}
   header button:disabled{opacity:.5;cursor:default}
   .pausedbar{flex:0 0 auto;padding:7px 16px;background:#d2992222;border-bottom:1px solid var(--amber);color:var(--amber);font-size:13px}
+  .pausedbar button{margin-left:10px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer}
+  .question{flex:0 0 auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 16px;background:#1f6feb22;border-bottom:1px solid var(--accent);font-size:13px}
+  .question .qtext{flex:1 1 240px;word-break:break-word}
+  .question input{flex:1 1 180px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:13px}
+  .question button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer}
+  .question button.primary{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
   .layout{flex:1;display:grid;grid-template-columns:240px 1fr;min-height:0}
   .sidebar{background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
   .side-title{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:12px 14px 6px}
@@ -27,7 +33,7 @@
   .chat:hover{background:var(--panel2)}
   .chat.active{background:#1f6feb22;color:var(--accent)}
   .chat .cdot{width:8px;height:8px;border-radius:50%;background:#30363d;flex:0 0 auto}
-  .chat .cdot.busy{background:var(--amber)}.chat .cdot.idle{background:var(--green)}.chat .cdot.stopped{background:var(--muted)}
+  .chat .cdot.busy{background:var(--amber)}.chat .cdot.idle{background:var(--green)}.chat .cdot.stopped{background:var(--muted)}.chat .cdot.waiting{background:var(--accent)}
   .chat .cname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .chat .csess{margin-left:auto;color:var(--muted);font-size:10px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .side-actions{padding:10px;border-top:1px solid var(--border)}
@@ -39,6 +45,7 @@
   .badge{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600}
   .badge.idle{background:#1f6feb33;color:var(--accent)}.badge.busy{background:#d2992233;color:var(--amber)}
   .badge.stopped,.badge.starting{background:#30363d;color:var(--muted)}
+  .badge.waiting{background:var(--accent);color:#04121f}
   .chat-header .hmeta{color:var(--muted);font-size:12px}
   .chat-header .hbtns{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
   .chat-header .hbtns button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
@@ -133,7 +140,8 @@
   <button id="stopAllBtn" class="danger" title="Abort every run and hold agent messages until you write again">⏹ Stop all</button>
   <button id="settingsBtn">⚙ Settings</button>
 </header>
-<div class="pausedbar" id="pausedBar" hidden></div>
+<div class="pausedbar" id="pausedBar" hidden><span id="pausedText"></span><button id="resumeBtn" hidden></button></div>
+<div id="questionBar"></div>
 <div class="layout">
   <aside class="sidebar">
     <div class="side-title">Chats</div>
@@ -210,6 +218,9 @@
     conv: {},              // name -> { items: [], live: {text,thinking,tools,active} }
     selected: "group",     // "group" | "#<channel>" | an agent name
     paused: null,          // why the fleet is paused, if it is
+    held: 0,               // agent messages the pause is holding back
+    questions: [],         // agents waiting for an answer
+    maxCost: null,         // spending limit in dollars, if any
     mcp: { mcpServers: {} },
     extensions: { available: [], selected: {} },
     settingsTab: "fleet"
@@ -219,7 +230,13 @@
   function isChannelSel(sel) { return sel === "group" || (typeof sel === "string" && sel.indexOf("#") === 0); }
   function channelNameOf(sel) { return sel === "group" ? "group" : String(sel).slice(1); }
   function getChannel(name) { for (var i = 0; i < state.channels.length; i++) if (state.channels[i].name === name) return state.channels[i]; return null; }
-  function channelMessages(name) { return state.group.filter(function (m) { return m.to === name; }); }
+  // a channel shows what was said in it, plus the DMs between its members that do the work
+  function inChannel(m, name) {
+    if (m.to === name) return true;
+    var c = getChannel(name);
+    return m.kind === "chat" && !!c && c.members.indexOf(m.from) >= 0 && c.members.indexOf(m.to) >= 0;
+  }
+  function channelMessages(name) { return state.group.filter(function (m) { return inChannel(m, name); }); }
 
   // ---------- conversation model ----------
   function getConv(name) { if (!state.conv[name]) state.conv[name] = { items: [], live: null }; return state.conv[name]; }
@@ -313,7 +330,32 @@
 
   function renderPaused() {
     pausedBarEl.hidden = !state.paused;
-    pausedBarEl.textContent = state.paused ? "⏸ Fleet paused: " + state.paused + ". Your next message resumes it." : "";
+    document.getElementById("pausedText").textContent = state.paused ? "⏸ Fleet paused: " + state.paused + ". Your next message resumes it." : "";
+    var resumeBtn = document.getElementById("resumeBtn");
+    resumeBtn.hidden = !state.paused || !state.held;
+    resumeBtn.textContent = "Resume and deliver " + state.held + " held message" + (state.held === 1 ? "" : "s");
+  }
+
+  function renderQuestions() {
+    document.getElementById("questionBar").innerHTML = state.questions.map(function (q) {
+      var html = '<div class="question" data-q="' + esc(q.id) + '"><span class="qtext"><b>@' + esc(q.agent) + "</b> " + esc(q.title) + (q.message ? ": " + esc(q.message) : "") + "</span>";
+      if (q.method === "confirm") html += '<button class="primary" data-confirm="1">Yes</button><button data-confirm="0">No</button>';
+      else if (q.method === "select") html += (q.options || []).map(function (o) { return '<button class="primary" data-value="' + esc(o) + '">' + esc(o) + "</button>"; }).join("");
+      else html += '<input placeholder="' + esc(q.placeholder || "") + '" value="' + esc(q.prefill || "") + '"><button class="primary" data-send="1">Send</button>';
+      return html + '<button data-cancel="1">Dismiss</button></div>';
+    }).join("");
+  }
+
+  function answerClicked(e) {
+    var b = e.target.closest("button");
+    var row = e.target.closest(".question");
+    if (!b || !row) return;
+    var body = { id: row.getAttribute("data-q") };
+    if (b.hasAttribute("data-confirm")) body.confirmed = b.getAttribute("data-confirm") === "1";
+    else if (b.hasAttribute("data-value")) body.value = b.getAttribute("data-value");
+    else if (b.hasAttribute("data-send")) body.value = row.querySelector("input").value;
+    else body.cancelled = true;
+    post("/answer", body).then(function (r) { if (!r.ok) alert("Could not answer: " + (r.error || "")); });
   }
 
   function renderSidebar() {
@@ -420,6 +462,7 @@
   function renderGroupMessage(m) {
     var whoCls = m.from === "user" ? "" : (m.from === "system" ? "system" : "");
     if (m.from === "system") return '<div class="msg system">' + esc(m.text) + "</div>";
+    if (m.kind === "activity") return '<div class="msg system">' + esc(m.from) + " " + esc(m.text) + "</div>";
     var target = m.to === "group" || getChannel(m.to) ? "" : (" → @" + esc(m.to));
     var reply = m.replyTo ? ' <span class="hmeta">↪ reply</span>' : "";
     return '<div class="msg ' + whoCls + '"><div class="who">' + esc(m.from) + target + '<span class="t">' + time(m.ts) + "</span>" + reply + '</div><div class="bubble">' + esc(m.text) + "</div></div>";
@@ -560,7 +603,10 @@
       var addBtn = document.getElementById("mcpAdd");
       if (addBtn) addBtn.onclick = mcpAdd;
     } else if (tab === "usage") {
+      var spent = agentNames().reduce(function (sum, n) { var s = state.agents[n].stats; return sum + Number((s && s.cost) || 0); }, 0);
       var h4 = "<h3>Usage & cost</h3>";
+      h4 += '<div class="stat" style="margin-bottom:10px">Spent so far: <b>$' + spent.toFixed(4) + "</b>" + (state.maxCost ? " of a $" + esc(state.maxCost) + " limit" : " (no limit)") + "</div>";
+      h4 += '<div class="field"><label>Spending limit in dollars: the fleet pauses when it is reached</label><input id="budgetInput" value="' + esc(state.maxCost || "") + '" placeholder="e.g. 5"></div><button id="budgetSave">Save limit</button><h3>By agent</h3>';
       agentNames().forEach(function (n) {
         var a = state.agents[n];
         var s = a.stats;
@@ -568,6 +614,11 @@
         h4 += '<div class="mrow"><span class="nm">@ ' + esc(n) + '</span><span class="desc">' + (s.totalMessages || 0) + " msgs · " + (s.toolCalls || 0) + " tools</span><span class=\"stat\"><b>$" + Number(s.cost || 0).toFixed(4) + "</b> · " + (s.tokens && s.tokens.total || 0) + " tok</span></div>";
       });
       mbodyEl.innerHTML = h4;
+      document.getElementById("budgetSave").onclick = function () {
+        post("/budget", { dollars: Number(document.getElementById("budgetInput").value) }).then(function (r) {
+          if (!r.ok) alert("Could not set the limit: " + (r.error || ""));
+        });
+      };
     }
   }
   // ---------- actions ----------
@@ -726,7 +777,7 @@
 
   function onSnapshot(snap) {
     state.agents = {};
-    (snap.agents || []).forEach(function (a) { state.agents[a.name] = { info: a, status: a.status, model: a.model, role: a.role, sessionName: a.sessionName, stats: null }; });
+    (snap.agents || []).forEach(function (a) { state.agents[a.name] = { info: a, status: a.status, model: a.model, role: a.role, sessionName: a.sessionName, stats: (snap.stats || {})[a.name] || null }; });
     state.group = snap.messages || [];
     state.channels = snap.channels || [];
     if (!state.channels.some(function (c) { return c.name === "group"; })) state.channels.unshift({ name: "group", members: agentNames(), supervisor: null });
@@ -737,7 +788,11 @@
     }
     metaEl.textContent = agentNames().length + " agent(s)";
     state.paused = snap.paused || null;
+    state.held = snap.held || 0;
+    state.questions = snap.questions || [];
+    state.maxCost = snap.maxCost || null;
     renderPaused();
+    renderQuestions();
     renderAll();
     // refresh mcp + extensions
     fetch("/mcp").then(function (r) { return r.json(); }).then(function (m) { state.mcp = m; }).catch(function () {});
@@ -752,7 +807,7 @@
     var m = JSON.parse(e.data);
     state.group.push(m);
     if (state.group.length > 300) state.group = state.group.slice(-300);
-    if (isChannelSel(state.selected) && m.to === channelNameOf(state.selected)) renderConversation();
+    if (isChannelSel(state.selected) && inChannel(m, channelNameOf(state.selected))) renderConversation();
   });
   es.addEventListener("agent_event", function (e) {
     var d = JSON.parse(e.data);
@@ -766,7 +821,15 @@
     var s = JSON.parse(e.data);
     if (state.agents[s.name]) { state.agents[s.name].status = s.status; renderSidebar(); if (state.selected === s.name) renderHeader(); }
   });
-  es.addEventListener("paused", function (e) { state.paused = JSON.parse(e.data).reason; renderPaused(); });
+  es.addEventListener("paused", function (e) { var p = JSON.parse(e.data); state.paused = p.reason; state.held = p.held || 0; renderPaused(); });
+  es.addEventListener("question", function (e) { state.questions.push(JSON.parse(e.data)); renderQuestions(); });
+  es.addEventListener("question_gone", function (e) { var id = JSON.parse(e.data).id; state.questions = state.questions.filter(function (q) { return q.id !== id; }); renderQuestions(); });
+  es.addEventListener("stats", function (e) {
+    var s = JSON.parse(e.data);
+    if (state.agents[s.name]) { state.agents[s.name].stats = s.stats; if (state.selected === s.name) renderHeader(); }
+    if (overlayEl.classList.contains("show") && state.settingsTab === "usage" && document.activeElement.id !== "budgetInput") renderSettings();
+  });
+  es.addEventListener("budget", function (e) { state.maxCost = JSON.parse(e.data).maxCost; if (state.settingsTab === "usage") renderSettings(); });
   es.addEventListener("agent_added", function (e) {
     var a = JSON.parse(e.data);
     // the "to" picker is patched, not re-rendered: that would wipe a draft in the composer
@@ -796,6 +859,8 @@
     if (chat) selectChat(chat.getAttribute("data-chat"));
   });
   document.getElementById("newChatBtn").onclick = newChat;
+  document.getElementById("questionBar").addEventListener("click", answerClicked);
+  document.getElementById("resumeBtn").onclick = function () { post("/resume", {}); };
   var stopAllBtn = document.getElementById("stopAllBtn");
   stopAllBtn.onclick = function () {
     stopAllBtn.disabled = true;

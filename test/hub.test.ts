@@ -45,6 +45,20 @@ describe("pause and hop count", () => {
     expect(hub.pausedReason()).toBeNull();
   });
 
+  it("knows what a pause is holding back", () => {
+    chat("alice");
+    const since = Date.now() + 1;
+    while (Date.now() < since); // the next message must be newer than the first
+    hub.pause("too many", since);
+    const held = hub.appendMessage({ from: "bob", to: "alice", kind: "chat", text: "held" });
+    expect(hub.heldMessages().map((m) => m.id)).toEqual([held.id]);
+  });
+
+  it("holds nothing when it is not paused", () => {
+    chat("alice");
+    expect(hub.heldMessages()).toEqual([]);
+  });
+
   it("counts agent messages since the human last spoke", () => {
     chat("alice");
     chat("user");

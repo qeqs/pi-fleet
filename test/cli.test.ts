@@ -11,6 +11,14 @@ describe("parseArgs", () => {
     expect(parseArgs(["--no-lean"]).lean).toBe(false);
   });
 
+  it("reads the spending limit and the tools needing approval", () => {
+    expect(parseArgs(["--max-cost", "2.5", "--approve", "bash, write"])).toMatchObject({ maxCost: 2.5, approve: ["bash", "write"] });
+  });
+
+  it("refuses a bad spending limit", () => {
+    for (const cost of ["free", "0", "-1"]) expect(() => parseArgs(["--max-cost", cost])).toThrow("--max-cost needs a positive number");
+  });
+
   it("reads the restart options", () => {
     expect(parseArgs(["--fresh", "--no-restart"])).toMatchObject({ fresh: true, noRestart: true });
   });

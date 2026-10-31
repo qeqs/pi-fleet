@@ -168,6 +168,19 @@ describe("fleet tools", () => {
     expect(res.content[0].text).toContain("Sent to #dev");
   });
 
+  it("records routing decisions where the channel view can show them", async () => {
+    hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "build it" });
+    await toolsFor("impl").route.execute("1", { channel: "group", respond: ["rev"] });
+    const mark = hub.tailMessages(20).find((m) => m.kind === "activity");
+    expect(mark).toMatchObject({ from: "impl", to: "group", text: "routed to rev" });
+  });
+
+  it("records a decision to route to nobody", async () => {
+    hub.appendMessage({ from: "rev", to: "group", kind: "chat", text: "APPROVE" });
+    await toolsFor("impl").route.execute("1", { channel: "group", respond: [] });
+    expect(hub.tailMessages(20).find((m) => m.kind === "activity")?.text).toBe("routed to nobody");
+  });
+
   it("runs the openspec task board on every platform (a .cmd shim cannot be spawned directly)", async () => {
     vi.stubEnv("PI_FLEET_ROOT", path.resolve(__dirname, ".."));
     const tools = toolsFor("impl");
@@ -187,11 +200,13 @@ describe("admitMessage", () => {
     expect(hub.pausedReason()).toBeNull();
   });
 
-  it("pauses the fleet at the first message past the limit", () => {
+  it("pauses the fleet at the first message past the limit, and holds that message", () => {
     userMsg();
     for (let i = 0; i < 3; i++) agentMsg();
-    expect(admitMessage(agentMsg(), hub, 3)).toBe(false);
+    const fourth = agentMsg();
+    expect(admitMessage(fourth, hub, 3)).toBe(false);
     expect(hub.pausedReason()).toContain("--max-hops");
+    expect(hub.heldMessages().map((m) => m.id)).toContain(fourth.id);
   });
 
   it("holds every agent message while paused, whatever the limit", () => {

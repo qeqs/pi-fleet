@@ -11,13 +11,14 @@ import { PiRpcBridge, bridgeListening } from "./rpc.ts";
 import { agentNameFromSpec, agentCwdFromSpec, agentModelFromSpec, agentRoleFromSpec, isValidAgentName } from "./spec.ts";
 import { CHAT_HELP, parseChatLine } from "./chat.ts";
 import { GuiServer } from "./gui.ts";
-import { loadFleetConfig, agentSpecFromConfig, saveFleetConfig, configPath } from "./config.ts";
+import { loadFleetConfig, agentSpecFromConfig, saveFleetConfig, configPath, isBudget } from "./config.ts";
 import { expandTemplate, templateNames, templateDescription } from "./templates.ts";
 import { discoverExtensions, readMcpConfig, writeMcpConfig } from "./pi-resources.ts";
 import { computeWakes } from "./wakes.ts";
 import { killProcessTree, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
 import { RestartPolicy } from "./restart.ts";
-import { UsageError, type FleetArgs, type Limits } from "./cli.ts";
+import { describeQuestion, parseAnswer, questionFrom, type Answer, type Question } from "./questions.ts";
+import { UsageError, budgetArg, type FleetArgs, type Limits } from "./cli.ts";
 
 /** A wake pi refuses (e.g. mid-compaction) is retried for about a minute before it is left for later. */
 const WAKE_RETRIES = 12;
@@ -41,6 +42,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   const spawnedHere = new Set<string>(); // not re-attached: this run answers for them if the start fails
   const stopping = new Set<string>(); // stopped on purpose, so their exit is not a crash
   const restarts = new Map<string, RestartPolicy>();
+  const questions = new Map<string, Question>(); // waiting for the human, by request id
   const leanCache = new Map<string, number | undefined>();
   let shuttingDown = false;
   let gui: GuiServer | null = null;
@@ -76,7 +78,9 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   const limits: Limits = {
     maxTurns: args.maxTurns ?? fleetCfg?.maxTurns ?? DEFAULT_MAX_TURNS,
     maxHops: args.maxHops ?? fleetCfg?.maxHops ?? DEFAULT_MAX_HOPS,
+    maxCost: args.maxCost ?? fleetCfg?.maxCost,
   };
+  const approveFor = (name: string): string[] | undefined => fleetCfg?.agents.find((a) => a.name === name)?.approve ?? args.approve;
 
   // One supervisor per hub: two would both push every wake, so agents would run twice.
   const other = hub.otherSupervisor();
@@ -119,9 +123,56 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     return reg.map((a) => `${a.name}[${a.status}]`).join("  ") || "(no agents)";
   }
 
+  /** An agent is blocked on the human until this is answered, so it has to be impossible to miss. */
+  function onQuestion(name: string, rec: Record<string, unknown>): void {
+    const q = questionFrom(name, rec);
+    if (!q) {
+      if (rec.method === "notify") print(`  ! [${name}] ${String(rec.message)}`);
+      return;
+    }
+    questions.set(q.id, q);
+    hub.updateAgent(name, { status: "waiting" });
+    gui?.broadcast("status", { name, status: "waiting" });
+    gui?.broadcast("question", q);
+    hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" is waiting for you: ${describeQuestion(q)}` });
+    print(`  ? [${name}] answer with: /answer ${name} ...`);
+    if (q.timeout) setTimeout(() => forgetQuestion(q.id), q.timeout);
+  }
+
+  function forgetQuestion(id: string): void {
+    if (questions.delete(id)) gui?.broadcast("question_gone", { id });
+  }
+
+  function answerQuestion(id: string, answer: Answer): void {
+    const q = questions.get(id);
+    if (!q) throw new Error("that question is no longer waiting");
+    const handle = agents.get(q.agent);
+    if (!handle) throw new Error(`agent "${q.agent}" is not running`);
+    handle.rpc.write({ type: "extension_ui_response", id, ...answer });
+    forgetQuestion(id);
+    if (![...questions.values()].some((other) => other.agent === q.agent)) {
+      hub.updateAgent(q.agent, { status: "busy" });
+      gui?.broadcast("status", { name: q.agent, status: "busy" });
+    }
+  }
+
+  /** Keep the numbers current, and stop spending the moment the budget is gone. */
+  async function refreshStats(name: string, handle: AgentHandle): Promise<void> {
+    const resp = await handle.rpc.getStats().catch(() => null);
+    const data = resp?.data as Record<string, unknown> | undefined;
+    if (!data) return;
+    hub.saveStats(name, data);
+    gui?.broadcast("stats", { name, stats: data });
+    if (limits.maxCost === undefined || hub.pausedReason() !== null) return;
+    const spent = Object.values(hub.readStats()).reduce((sum, s) => sum + Number(s.cost ?? 0), 0);
+    if (spent >= limits.maxCost) void stopAllRuns(`spending limit reached: $${spent.toFixed(2)} of $${limits.maxCost} (raise it with /budget)`);
+  }
+
   function wire(handle: AgentHandle, name: string) {
     handle.rpc.onEvent = (rec) => {
       const t = rec.type as string;
+      if (t === "extension_ui_request") return onQuestion(name, rec);
+      if (t === "turn_end" || t === "agent_settled") void refreshStats(name, handle);
       if (t === "agent_start") {
         print(`  ⟳ [${name}] working…`);
       } else if (t === "tool_execution_start") {
@@ -130,6 +181,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       } else if (t === "agent_settled") {
         print(`  ✓ [${name}] settled — ${listAgentsLine()}`);
         hub.ackDelivered(name);
+        forgetQuestionsOf(name);
       }
       // keep the GUI status badge in sync with the run state
       if (t === "agent_start") gui?.broadcast("status", { name, status: "busy" });
@@ -139,6 +191,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     };
     handle.rpc.onExit = (code) => {
       agents.delete(name);
+      forgetQuestionsOf(name);
       print(`  ✕ [${name}] exited (${code})`);
       if (shuttingDown || stopping.delete(name)) return;
       hub.updateAgent(name, { status: "stopped" });
@@ -147,6 +200,10 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       reassignRouters();
       restartAfterCrash(name);
     };
+  }
+
+  function forgetQuestionsOf(name: string): void {
+    for (const q of questions.values()) if (q.agent === name) forgetQuestion(q.id);
   }
 
   /** Bring a crashed agent back, spacing the attempts out and giving up on a crash loop. */
@@ -183,7 +240,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     const prior = hub.readAgents()[name];
     // pi keeps sessions per directory, and writes none until the first exchange
     const resume = !args.fresh && prior?.sessionFile && prior.cwd === cwd && fs.existsSync(prior.sessionFile) ? prior.sessionFile : undefined;
-    const handle = await spawnAgent(hub, name, cwd, limits, model, lean, role, extensions, resume);
+    const handle = await spawnAgent(hub, name, cwd, limits, model, lean, role, extensions, resume, approveFor(name));
     spawnedHere.add(name);
     agents.set(name, handle);
     wire(handle, name);
@@ -258,8 +315,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   }
 
   /** Abort every run and drop what is queued; the pause stops their last messages waking anyone. */
-  async function stopAllRuns(): Promise<number> {
-    hub.pause("stopped by you");
+  async function stopAllRuns(reason = "stopped by you"): Promise<number> {
+    hub.pause(reason);
     syncPaused();
     const running = [...agents.values()];
     await Promise.allSettled(
@@ -275,10 +332,27 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
 
   // Keep the GUI's paused banner in step with the hub.
   let shownPaused = hub.pausedReason();
+  let shownHeld = hub.heldMessages().length;
   function syncPaused(): void {
     const reason = hub.pausedReason();
-    if (reason !== shownPaused) gui?.broadcast("paused", { reason });
+    const held = reason === null ? 0 : hub.heldMessages().length;
+    if (reason !== shownPaused || held !== shownHeld) gui?.broadcast("paused", { reason, held });
     shownPaused = reason;
+    shownHeld = held;
+  }
+
+  /** Lift a pause and let what it held back through, so a long chain continues where it stopped. */
+  function resumeHeld(): number {
+    const held = hub.heldMessages();
+    if (hub.pausedReason() === null) return 0;
+    // the mark restarts the hop count; held messages are delivered past the limit on purpose
+    hub.appendMessage({ from: "user", to: "group", kind: "activity", text: "resumed" });
+    hub.resume();
+    syncPaused();
+    const woken = [...computeWakes(held, hub, lookup, 0)];
+    for (const [name, text] of woken) hub.enqueueWake(name, text);
+    for (const [name] of woken) schedulePump(name);
+    return held.length;
   }
 
   /** Channels stop when their router does: hand them to a running member and say so. */
@@ -349,8 +423,15 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         messages: hub.tailMessages(200),
         channels: hub.readChannels(),
         paused: hub.pausedReason(),
+        held: hub.heldMessages().length,
+        questions: [...questions.values()],
+        stats: hub.readStats(),
+        maxCost: limits.maxCost,
       }),
-      stopAll: stopAllRuns,
+      stopAll: () => stopAllRuns(),
+      resumeHeld,
+      answer: answerQuestion,
+      setBudget: setBudget,
       onMessage: ({ to, text }) => {
         hub.postUserMessage(to, text);
       },
@@ -554,6 +635,12 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     print(`  ↻ [${name}] restarted`);
   }
 
+  function setBudget(dollars: number): void {
+    if (!isBudget(dollars)) throw new Error("the spending limit must be a positive number of dollars");
+    limits.maxCost = dollars;
+    gui?.broadcast("budget", { maxCost: dollars });
+  }
+
   /** Run one parsed terminal command. */
   async function runCommand(name: string, cmdArgs: string): Promise<void> {
     switch (name) {
@@ -602,6 +689,21 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       }
       case "stopall":
         print(`  stopped ${await stopAllRuns()} agent(s); your next message resumes the fleet`);
+        return;
+      case "resume":
+        print(`  resumed; ${resumeHeld()} held message(s) delivered`);
+        return;
+      case "answer": {
+        const m = /^(\S+)\s+([\s\S]+)$/.exec(cmdArgs);
+        if (!m) throw new Error("usage: /answer name text");
+        const q = [...questions.values()].find((other) => other.agent === m[1]);
+        if (!q) throw new Error(`"${m[1]}" is not waiting for an answer`);
+        answerQuestion(q.id, parseAnswer(q, m[2]));
+        return;
+      }
+      case "budget":
+        setBudget(budgetArg("/budget", cmdArgs));
+        print(`  spending limit is now $${cmdArgs}`);
         return;
       case "stop":
         return stopAgent(cmdArgs);

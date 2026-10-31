@@ -3,12 +3,14 @@
  * (fleet.ts is the entry point and runs on import).
  */
 import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS } from "./hub.ts";
-import { isLimit } from "./config.ts";
+import { isBudget, isLimit } from "./config.ts";
 
 /** Runaway limits, handed to each agent at spawn. */
 export interface Limits {
   maxTurns: number;
   maxHops: number;
+  /** Pause the fleet at this spend, in dollars. Changes at runtime with /budget. */
+  maxCost?: number;
 }
 
 /** A mistake on the command line: reported as a message with a pointer to --help, never a stack trace. */
@@ -17,6 +19,12 @@ export class UsageError extends Error {}
 function limitArg(flag: string, value: string | undefined): number {
   const n = Number(value);
   if (value === undefined || value === "" || !isLimit(n)) throw new UsageError(`${flag} needs a whole number (0 means no limit), got "${value}"`);
+  return n;
+}
+
+export function budgetArg(flag: string, value: string | undefined): number {
+  const n = Number(value);
+  if (value === undefined || value === "" || !isBudget(n)) throw new UsageError(`${flag} needs a positive number of dollars, got "${value}"`);
   return n;
 }
 
@@ -33,8 +41,8 @@ function valueArg(flag: string, value: string | undefined): string {
   return value;
 }
 
-export function parseArgs(argv: string[]): { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; fresh?: boolean; noRestart?: boolean; rest: string[] } {
-  const out: { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; fresh?: boolean; noRestart?: boolean; rest: string[] } = { agents: [], rest: [] };
+export function parseArgs(argv: string[]): { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; maxCost?: number; approve?: string[]; fresh?: boolean; noRestart?: boolean; rest: string[] } {
+  const out: { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; maxCost?: number; approve?: string[]; fresh?: boolean; noRestart?: boolean; rest: string[] } = { agents: [], rest: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dir") out.dir = valueArg(a, argv[++i]);
@@ -52,6 +60,8 @@ export function parseArgs(argv: string[]): { dir?: string; agents: string[]; mod
     else if (a === "--host") out.host = valueArg(a, argv[++i]);
     else if (a === "--max-turns") out.maxTurns = limitArg(a, argv[++i]);
     else if (a === "--max-hops") out.maxHops = limitArg(a, argv[++i]);
+    else if (a === "--max-cost") out.maxCost = budgetArg(a, argv[++i]);
+    else if (a === "--approve") out.approve = valueArg(a, argv[++i]).split(",").map((t) => t.trim()).filter(Boolean);
     else if (a.startsWith("-")) throw new UsageError(`unknown option "${a}"`);
     else out.rest.push(a);
   }
@@ -87,6 +97,8 @@ Usage:
   --no-restart: leave crashed agents stopped instead of restarting them (up to 3 times in 10 minutes).
   --max-turns N: abort an agent after N turns in one run (default ${DEFAULT_MAX_TURNS}; 0 = no limit).
   --max-hops N: pause the fleet after N agent messages since your last message (default ${DEFAULT_MAX_HOPS}; 0 = no limit).
+  --max-cost N: abort every run and pause the fleet once it has spent N dollars.
+  --approve bash,write: agents ask a person before running these tools.
 
 Group chat input:
   # text          broadcast to the group
@@ -99,4 +111,7 @@ Group chat input:
   /stop name      stop an agent
   /restart name   restart an agent; it keeps its conversation
   /stopall        abort every run and pause the fleet until your next message
+  /resume         lift a pause and deliver the messages it held back
+  /answer name x  answer an agent's question
+  /budget N       change the spending limit, in dollars
   /quit           stop all and exit`;

@@ -16,6 +16,8 @@ let port: number;
 const posted: { to: string; text: string }[] = [];
 const sessionNames: { name: string; sessionName: string }[] = [];
 let stopAllCalls = 0;
+const answers: { id: string; answer: unknown }[] = [];
+const budgets: number[] = [];
 
 function get(path: string, headers: http.OutgoingHttpHeaders = AUTH): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
@@ -71,6 +73,15 @@ beforeAll(async () => {
     stopAll: async () => {
       stopAllCalls++;
       return 2;
+    },
+    resumeHeld: () => 3,
+    answer: (id, answer) => {
+      if (id === "gone") throw new Error("that question is no longer waiting");
+      answers.push({ id, answer });
+    },
+    setBudget: (dollars) => {
+      if (!(dollars > 0)) throw new Error("the spending limit must be a positive number of dollars");
+      budgets.push(dollars);
     },
   });
   port = await gui.start();
@@ -140,6 +151,28 @@ describe("GuiServer", () => {
     expect(stopAllCalls).toBe(0);
     expect((await post("/stop-all", "{}")).status).toBe(200);
     expect(stopAllCalls).toBe(1);
+  });
+
+  it("passes an answer to the agent's question on, and needs a token", async () => {
+    const body = JSON.stringify({ id: "q1", confirmed: true });
+    expect((await post("/answer", body, {})).status).toBe(401);
+    expect((await post("/answer", body)).status).toBe(200);
+    expect(answers).toEqual([{ id: "q1", answer: { confirmed: true } }]);
+  });
+
+  it("reports an answer that came too late", async () => {
+    expect((await post("/answer", JSON.stringify({ id: "gone", value: "x" }))).status).toBe(400);
+  });
+
+  it("resumes and delivers held messages, with a token only", async () => {
+    expect((await post("/resume", "{}", {})).status).toBe(401);
+    expect((await post("/resume", "{}")).status).toBe(200);
+  });
+
+  it("changes the spending limit, refusing nonsense", async () => {
+    expect((await post("/budget", JSON.stringify({ dollars: 5 }))).status).toBe(200);
+    expect(budgets).toEqual([5]);
+    expect((await post("/budget", JSON.stringify({ dollars: -1 }))).status).toBe(400);
   });
 
   it("tracks connected client count", async () => {

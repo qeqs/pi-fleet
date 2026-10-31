@@ -11,6 +11,8 @@
  *   PI_FLEET_ARGV      JSON array: the program and arguments to spawn (no shell)
  *   PI_FLEET_CWD       cwd for pi
  *   PI_FLEET_LOG       stderr log file
+ *   PI_FLEET_OWNER_PID optional: exit when this process dies. Bridges outlive the
+ *                      supervisor on purpose, so a killed test run would leak agents.
  *
  * PI_FLEET_DIR / PI_FLEET_AGENT / PI_FLEET_ROOT / PI_FLEET_ROLE / PI_FLEET_LEAN
  * are passed through to pi via process.env.
@@ -111,3 +113,14 @@ function shutdown() {
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+const ownerPid = Number(process.env.PI_FLEET_OWNER_PID ?? 0);
+if (ownerPid > 0) {
+  setInterval(() => {
+    try {
+      process.kill(ownerPid, 0);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ESRCH") shutdown();
+    }
+  }, 1000);
+}

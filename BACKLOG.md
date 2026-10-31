@@ -1,5 +1,7 @@
 # pi-fleet backlog
 
+Everything here is done and kept as a record. New work is tracked in [ROADMAP.md](ROADMAP.md).
+
 ## Local / weak models
 - [x] `--lean` flag: spawn agents with a smaller prompt (`--no-skills`,
       `--no-context-files`, exclude web/research tools). Validated: 4B local model

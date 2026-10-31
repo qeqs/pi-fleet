@@ -335,12 +335,11 @@ describe("createPoller", () => {
 
   it("resets offset on generation change (rotation)", () => {
     const wakes: string[] = [];
-    const small = new Hub(dir, 100);
-    const poller = createPoller({ hub: small, name: "bob", isBusy: () => false, wake: (t) => wakes.push(t), pollMs: 60000 });
+    const poller = createPoller({ hub, name: "bob", isBusy: () => false, wake: (t) => wakes.push(t), pollMs: 60000 });
     poller.seekToEnd();
-    for (let i = 0; i < 20; i++) small.appendMessage({ from: "alice", to: "group", kind: "chat", text: `pad ${i} padding padding padding` });
-    small.rotateIfLarge();
-    small.appendMessage({ from: "alice", to: "group", kind: "chat", text: "after rotation" });
+    for (let i = 0; i < 20; i++) hub.appendMessage({ from: "alice", to: "group", kind: "chat", text: `pad ${i} padding padding padding` });
+    expect(hub.rotateIfLarge(100)).toBe(true);
+    hub.appendMessage({ from: "alice", to: "group", kind: "chat", text: "after rotation" });
     poller.tick();
     expect(wakes).toHaveLength(1);
     expect(wakes[0]).toContain("after rotation");

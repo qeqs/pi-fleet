@@ -124,6 +124,7 @@ beforeAll(async () => {
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
     PI_FLEET_POLL_MS: "300",
+    PI_FLEET_OWNER_PID: String(process.pid),
   };
 }, 30000);
 

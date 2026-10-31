@@ -34,6 +34,39 @@ function killTree(pid: number): void {
   }
 }
 
+describe("bridge owner", () => {
+  it("exits when its owner dies, so a killed test run leaks no agents", async () => {
+    const owner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+    const pipeIn = makePipe("in");
+    const pipeOut = makePipe("out");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-bridge-test-"));
+    const bridge = spawn(process.execPath, [tsxCli, bridgeScript], {
+      env: {
+        ...process.env,
+        PI_FLEET_PIPE_IN: pipeIn,
+        PI_FLEET_PIPE_OUT: pipeOut,
+        PI_FLEET_ARGV: JSON.stringify([process.execPath, fakePi]),
+        PI_FLEET_CWD: tmp,
+        PI_FLEET_LOG: path.join(tmp, "bridge.log"),
+        PI_FLEET_OWNER_PID: String(owner.pid),
+      },
+      stdio: "ignore",
+      detached: true,
+    });
+    bridge.unref();
+    try {
+      (await PiRpcBridge.connect(pipeIn, pipeOut, bridge.pid!)).close();
+      expect(await bridgeListening(pipeIn)).toBe(true);
+      killTree(owner.pid ?? 0);
+      for (let i = 0; i < 80 && (await bridgeListening(pipeIn)); i++) await new Promise((r) => setTimeout(r, 100));
+      expect(await bridgeListening(pipeIn)).toBe(false);
+    } finally {
+      killTree(owner.pid ?? 0);
+      killTree(bridge.pid ?? 0);
+    }
+  }, 20000);
+});
+
 describe("bridge (named-pipe transport, detached + re-attach)", () => {
   let bridge: ChildProcess;
   let pipeIn: string;

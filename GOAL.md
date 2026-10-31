@@ -1,6 +1,41 @@
-# Goal: finish every item in BACKLOG.md
+# Goal: ship pi-fleet 1.0 by completing ROADMAP.md
 
 Owner: pi-fleet
+Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
+
+## Definition of done
+- Every `[ ]` in `ROADMAP.md` is `[x]` (implemented + verified) or explicitly descoped with a
+  note saying why.
+- Every milestone's **Done when** line has been demonstrated, and how is recorded in the
+  progress log below.
+- `v1.0.0` is tagged, with CI green on Windows, Linux and macOS.
+
+## How to work it
+- One milestone at a time, in order. New ideas go into `ROADMAP.md`, not into the current
+  milestone, unless it cannot be finished without them.
+- Each item ships with a test that fails without it. A test proves nothing until it has been
+  seen to fail.
+- Each milestone ends with a passing `npm test`, a clean `npm run typecheck`, and at least one
+  real-model run of the sdlc chain: the scripted model does not show how real models misbehave.
+- One branch per milestone, merged into `main` once CI is green and tagged with the release
+  in the roadmap. (Pull requests need `gh` or a token, which this environment does not have.)
+
+## Progress log
+- 2026-11-01: Goal set. `ROADMAP.md` written from the review below and checked against pi's
+  docs: `get_state` returns `sessionFile` (resume), RPC dialogs exist (`extension_ui_request`),
+  and the `tool_call` hook can block a call (approvals).
+- 2026-10-31: 0.1.0 published to github.com/qeqs/pi-fleet under Apache-2.0. A hands-on review
+  found the main sdlc chain stalled, and these were fixed: `@mentions` in channels, delivery to
+  busy agents, channels in detached mode, GUI composer and forms, GUI token + origin checks +
+  CSP, shell-free pi launch, pid checks before `fleet stop`, the terminal prompt, the openspec
+  tool on Windows, and lost `agents.json` writes (EPERM under concurrent reads on Windows).
+  Added `--max-turns`, `--max-hops` and Stop all. 144 tests, including 8 e2e scenarios with a
+  scripted model; the chain was also verified on a real model.
+
+---
+
+# Previous goal: finish every item in BACKLOG.md
+
 Status: COMPLETE — Phase 1 (incl. direct-wake), Phase 2 (5/5), Phase 3 GUI prototype, Phase 4 (templates, beads, web UI hosting), Phase 5 (desktop app) all done.
 
 ## Definition of done
@@ -32,8 +67,8 @@ command used). `tsc --noEmit` stays clean and the vitest suite passes.
 - [x] Detached mode: agents survive supervisor exit (named-pipe stdin on Windows)
 
 ### Phase 3 — GUI minimal prototype (early validation)
-- [ ] Small working desktop/web GUI: group chat + one pane per agent (validates RPC-event data flow)
-- [ ] Live token/tool activity per agent (via RPC events)
+- [x] Small working desktop/web GUI: group chat + one pane per agent (validates RPC-event data flow)
+- [x] Live token/tool activity per agent (via RPC events)
 
 ### Phase 4 — Later (all in scope)
 - [x] Fleet templates: `fleet up --template sdlc` (planner + implementer + reviewer)
@@ -43,7 +78,7 @@ command used). `tsc --noEmit` stays clean and the vitest suite passes.
 ### Phase 5 — GUI refinement (final)
 - [x] Full desktop app (Tauri/Electron) group-chat view: one pane per agent + shared channel
 - [x] Session naming/rename UI (`set_session_name` over RPC)
-- [x] Fleet config UI: default model, providers, per-agent cwd
+- [x] Fleet config UI: default model, providers, per-agent cwd (read-only in the GUI; editing moved to ROADMAP Milestone 5)
 
 ## Progress log
 - 2026-10-29: Phase 1 item 5 done — rotation + compaction: Hub.rotateIfLarge archives

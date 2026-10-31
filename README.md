@@ -334,7 +334,12 @@ Requires `bd` on PATH (on Windows, `bd.exe`). Run `bd init` once in a project cw
 ## Files
 
 ```
-src/fleet.ts           supervisor + group chat CLI (+ serve/init/config/templates/rename)
+src/fleet.ts           entry point: dispatches the fleet commands
+src/cli.ts             argument parsing and usage text
+src/supervisor.ts      fleet up/serve: spawns agents, tails the bus, GUI, terminal chat
+src/spawn.ts           starting agents: lean detection, bridges, process-tree kill
+src/wakes.ts           who a batch of bus messages wakes, and with what text
+src/commands.ts        one-shot commands (list/stop/log/init/config/templates/rename)
 src/rpc.ts             pi RPC client (JSONL) — direct child + named-pipe bridge client
 src/bridge.ts          detached bridge process owning a pi child over named pipes
 src/hub.ts             file-based message bus + agent registry (+ rotation, stats, heartbeat)
@@ -366,9 +371,10 @@ scripted OpenAI-compatible endpoint. It covers what the unit tests cannot see: a
 actually travelling through the fleet (the sdlc chain, a busy agent, detached channels) and
 the brakes stopping real runs (hop and turn limits, Stop all).
 
-## Backlog
+## Roadmap
 
-See [BACKLOG.md](BACKLOG.md).
+See [ROADMAP.md](ROADMAP.md) for what comes next and [GOAL.md](GOAL.md) for the current goal.
+[BACKLOG.md](BACKLOG.md) records what is already done.
 
 ## License
 

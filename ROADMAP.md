@@ -29,30 +29,32 @@ runaway models.
 
 Linux and macOS have never been run, and the riskiest logic cannot be unit-tested yet.
 
-- [ ] CI on every push and pull request: typecheck and the full test suite on Windows, Linux and macOS
-- [ ] Fix whatever CI finds on Linux and macOS
-- [ ] Typecheck `test/` as well as `src/`
-- [ ] Split `src/fleet.ts` (1,000 lines, runs `main()` on import) so wake, pause and argument logic can be unit-tested
-- [ ] An interrupted test run leaves no detached agents behind
+- [x] CI on every push and pull request: typecheck and the full test suite on Windows, Linux and macOS
+- [x] Fix whatever CI finds on Linux and macOS (it found nothing: green on the first run)
+- [x] Typecheck `test/` as well as `src/`
+- [x] Split `src/fleet.ts` (1,000 lines, runs `main()` on import) so wake, pause and argument logic can be unit-tested
+- [x] An interrupted test run leaves no detached agents behind
 
 **Done when:** CI is green on all three systems on `main`.
 
 ## 1. Nothing fails silently
 
-- [ ] Bad input gets a clear message and a non-zero exit, never a stack trace: unknown flags, `--port abc`, an invalid `fleet.json`
-- [ ] `fleet --help`, and a useful `fleet stop` on an empty hub
-- [ ] A failed spawn rolls back, leaving no orphaned agents
-- [ ] Unknown terminal `/commands` are rejected instead of being sent to agents; add `/help`
-- [ ] `@typo` and `#typo` are rejected in the terminal and the GUI; channels always display as `#name`
-- [ ] Messages too long for the bus are refused or split, never silently cut
-- [ ] A crashed agent is marked stopped in the registry, with a notice on the bus
-- [ ] A stopped channel supervisor is replaced instead of leaving the channel dead
-- [ ] A second supervisor on the same hub is refused
-- [ ] A model request that stalls is detected and reported: the turn limit only counts finished turns
-- [ ] `channels.json` writes take the registry lock, so concurrent updates are not lost
-- [ ] `lean` in `fleet.json` is honoured
-- [ ] Desktop: a failed start shows an error window at once, not 90 seconds of nothing
-- [ ] `fleet doctor` checks pi, the model, the hub and stale registry entries
+- [x] Bad input gets a clear message and a non-zero exit, never a stack trace: unknown flags, `--port abc`, an invalid `fleet.json`
+- [x] `fleet --help`, and a useful `fleet stop` on an empty hub
+- [x] A failed spawn rolls back, leaving no orphaned agents
+- [x] Unknown terminal `/commands` are rejected instead of being sent to agents; add `/help`
+- [x] `@typo` and `#typo` are rejected in the terminal and the GUI; channels always display as `#name`
+- [x] Messages too long for the bus are refused or split, never silently cut
+- [x] A crashed agent is marked stopped in the registry, with a notice on the bus
+- [x] A stopped channel supervisor is replaced instead of leaving the channel dead
+- [x] A second supervisor on the same hub is refused
+- [x] A model request that stalls is detected and reported: the turn limit only counts finished turns
+- [x] A run that ends in a model error says so on the bus, instead of the agent just going idle
+- [x] A run that keeps making the same fleet call is stopped early, long before the turn limit
+- [x] `channels.json` writes take the registry lock, so concurrent updates are not lost
+- [x] `lean` in `fleet.json` is honoured
+- [x] Desktop: a failed start shows an error window at once, not 90 seconds of nothing
+- [x] `fleet doctor` checks pi, the model, the hub and stale registry entries
 
 **Done when:** each failure above has a test that provokes it and asserts the message the user sees.
 

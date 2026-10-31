@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hub } from "../src/hub.ts";
+import { MAX_MESSAGE_LEN } from "../src/hub.ts";
 import fleetExtension, { groupWakesAgent, buildLookup, createPoller, fleetPrompt, rolePrompt, admitMessage, TASKBOARD } from "../src/extension/index.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
@@ -145,6 +146,28 @@ describe("fleet tools", () => {
     expect(res.content[0].text).toContain("Routed #group");
   });
 
+  it("refuses an unknown target and lists what exists", async () => {
+    const res = await toolsFor("impl").fleet_send.execute("1", { to: "revv", text: "hi" });
+    expect(res.content[0].text).toContain('no agent or channel "revv". Agents: impl, rev');
+    expect(chat()).toHaveLength(0);
+  });
+
+  it("refuses an over-long message, so the model can split it", async () => {
+    const long = "x".repeat(MAX_MESSAGE_LEN + 1);
+    const tools = toolsFor("impl");
+    for (const res of [await tools.fleet_send.execute("1", { to: "rev", text: long }), await tools.fleet_mention.execute("2", { agents: ["rev"], text: long })]) {
+      expect(res.content[0].text).toContain("Not sent");
+      expect(res.content[0].text).toContain("split it");
+    }
+    expect(chat()).toHaveLength(0);
+  });
+
+  it("names channels as channels when sending", async () => {
+    hub.upsertChannel({ name: "dev", members: ["impl", "rev"] });
+    const res = await toolsFor("impl").fleet_send.execute("1", { to: "dev", text: "hi" });
+    expect(res.content[0].text).toContain("Sent to #dev");
+  });
+
   it("runs the openspec task board on every platform (a .cmd shim cannot be spawned directly)", async () => {
     vi.stubEnv("PI_FLEET_ROOT", path.resolve(__dirname, ".."));
     const tools = toolsFor("impl");
@@ -221,7 +244,7 @@ describe("turn limit", () => {
     return aborts;
   }
 
-  const notices = () => hub.tailMessages(20).filter((m) => m.text.includes("was stopped after"));
+  const notices = () => hub.tailMessages(20).filter((m) => m.text.includes("was stopped"));
 
   it("aborts the run at the limit, once, and says so on the bus", () => {
     const h = load("3");
@@ -230,6 +253,45 @@ describe("turn limit", () => {
     expect(endTurns(h, 5)).toBe(1);
     expect(notices()).toHaveLength(1);
     expect(notices()[0].text).toContain("bob");
+  });
+
+  it("stops a run that keeps making the same fleet call", () => {
+    const h = load("0");
+    const call = { message: { content: [{ type: "toolCall", name: "fleet_send", arguments: { to: "group", text: "Already done" } }] } };
+    let aborts = 0;
+    const ctx = { abort: () => aborts++ };
+    h.agent_start({}, ctx);
+    h.turn_end(call, ctx);
+    h.turn_end(call, ctx);
+    expect(aborts).toBe(0);
+    h.turn_end(call, ctx);
+    expect(aborts).toBe(1);
+    expect(notices()[0].text).toContain("same fleet call 3 times");
+  });
+
+  it("lets a run repeat ordinary work, and varied fleet messages", () => {
+    const h = load("0");
+    let aborts = 0;
+    const ctx = { abort: () => aborts++ };
+    h.agent_start({}, ctx);
+    const test = { message: { content: [{ type: "toolCall", name: "bash", arguments: { command: "npm test" } }] } };
+    for (let i = 0; i < 6; i++) h.turn_end(test, ctx);
+    for (let i = 0; i < 6; i++) h.turn_end({ message: { content: [{ type: "toolCall", name: "fleet_send", arguments: { to: "group", text: `step ${i}` } }] } }, ctx);
+    expect(aborts).toBe(0);
+  });
+
+  it("forgets repeated calls between runs", () => {
+    const h = load("0");
+    const call = { message: { content: [{ type: "toolCall", name: "route", arguments: { channel: "group" } }] } };
+    let aborts = 0;
+    const ctx = { abort: () => aborts++ };
+    h.agent_start({}, ctx);
+    h.turn_end(call, ctx);
+    h.turn_end(call, ctx);
+    h.agent_start({}, ctx);
+    h.turn_end(call, ctx);
+    h.turn_end(call, ctx);
+    expect(aborts).toBe(0);
   });
 
   it("counts each run from zero", () => {
@@ -245,6 +307,82 @@ describe("turn limit", () => {
     h.agent_start({}, { abort: () => {} });
     expect(endTurns(h, 500)).toBe(0);
     expect(notices()).toHaveLength(0);
+  });
+});
+
+describe("a silent or failing model", () => {
+  type Handler = (event: unknown, ctx: { abort: () => void }) => void;
+
+  function load(): Record<string, Handler> {
+    const handlers: Record<string, Handler> = {};
+    const stub = {
+      on: (event: string, handler: Handler) => (handlers[event] = handler),
+      registerCommand: () => {},
+      registerTool: () => {},
+    };
+    vi.stubEnv("PI_FLEET_DIR", dir);
+    vi.stubEnv("PI_FLEET_AGENT", "bob");
+    fleetExtension(stub as unknown as ExtensionAPI);
+    vi.unstubAllEnvs();
+    return handlers;
+  }
+
+  const ctx = { abort: () => {} };
+  const notes = (text: string) => hub.tailMessages(20).filter((m) => m.text.includes(text));
+  const FIVE_MINUTES = 5 * 60 * 1000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reports a model that has said nothing, once", () => {
+    load().turn_start({}, ctx);
+    vi.advanceTimersByTime(FIVE_MINUTES * 3);
+    expect(notes("no answer from its model")).toHaveLength(1);
+  });
+
+  it("does not report a model that is still streaming", () => {
+    const h = load();
+    h.turn_start({}, ctx);
+    vi.advanceTimersByTime(FIVE_MINUTES - 1000);
+    h.message_update({}, ctx);
+    vi.advanceTimersByTime(FIVE_MINUTES - 1000);
+    expect(notes("no answer from its model")).toHaveLength(0);
+  });
+
+  it("does not time a tool: they may run as long as they like", () => {
+    const h = load();
+    h.turn_start({}, ctx);
+    h.tool_execution_start({}, ctx);
+    vi.advanceTimersByTime(FIVE_MINUTES * 3);
+    expect(notes("no answer from its model")).toHaveLength(0);
+  });
+
+  it("reports a run that ended on a model error", () => {
+    const h = load();
+    h.message_end({ message: { role: "assistant", stopReason: "error", errorMessage: "Connection error." } }, ctx);
+    h.agent_settled({}, ctx);
+    expect(notes('agent "bob" stopped on a model error: Connection error.')).toHaveLength(1);
+  });
+
+  it("stays quiet when a retry succeeds", () => {
+    const h = load();
+    h.message_end({ message: { role: "assistant", stopReason: "error", errorMessage: "Connection error." } }, ctx);
+    h.message_end({ message: { role: "assistant", stopReason: "stop" } }, ctx);
+    h.agent_settled({}, ctx);
+    expect(notes("model error")).toHaveLength(0);
+  });
+
+  it("ignores user messages when looking for the outcome", () => {
+    const h = load();
+    h.message_end({ message: { role: "assistant", stopReason: "error", errorMessage: "boom" } }, ctx);
+    h.message_end({ message: { role: "user" } }, ctx);
+    h.agent_settled({}, ctx);
+    expect(notes("boom")).toHaveLength(1);
   });
 });
 

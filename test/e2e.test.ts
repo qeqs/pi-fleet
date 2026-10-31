@@ -8,7 +8,8 @@ import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Hub } from "../src/hub.ts";
+import { Hub, isPidAlive } from "../src/hub.ts";
+import { bridgeListening } from "../src/rpc.ts";
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
@@ -68,11 +69,11 @@ async function expectQuiet(): Promise<void> {
   expect((await llmLog()).length).toBe(settled);
 }
 
-function startFleet(name: string, args: string[]): { proc: ChildProcess; hub: Hub } {
+function startFleet(name: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): { proc: ChildProcess; hub: Hub } {
   const hubDir = path.join(tmp, name);
   const proc = spawn(process.execPath, [TSX, FLEET, ...args, "--dir", hubDir, "--model", MODEL], {
     cwd: tmp,
-    env,
+    env: { ...env, ...extraEnv },
     stdio: ["pipe", "pipe", "pipe"],
   });
   running.push({ proc, hubDir });
@@ -204,6 +205,89 @@ describe("fleet end to end", () => {
     await until("bob to receive the routed message", async () => (await llmLog()).find((r) => r.agent === "bob" && r.conversation.includes("while nobody supervises")));
   }, 60000);
 
+  it("marks a crashed agent stopped, says so, and hands its channel to another router", async () => {
+    const { hub } = startFleet("crash", ["serve", "--agent", "alice", "--agent", "bob"]);
+    await idle(hub, ["alice", "bob"]);
+    expect(hub.getChannel("group")?.supervisor).toBe("alice");
+    killTree(hub.readAgents().alice.pid);
+
+    await until("the crash notice", () => hub.tailMessages(20).find((m) => m.text.includes('agent "alice" stopped unexpectedly')));
+    await until("the router handover", () => hub.tailMessages(20).find((m) => m.text.includes('#group is now routed by "bob"')));
+    expect(hub.readAgents().alice.status).toBe("stopped");
+
+    hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "still there? route=bob" });
+    await until("the new router to take the message", async () => (await llmLog()).find((r) => r.agent === "bob" && r.last.includes("Routing task for #group")));
+  }, 60000);
+
+  it("refuses a second supervisor on the same hub", async () => {
+    const { proc, hub } = startFleet("two", ["serve", "--agent", "alice"]);
+    await firstMatch(proc, /GUI: /);
+    const second = startFleet("two", ["serve"]);
+    const stderr: string[] = [];
+    second.proc.stderr!.on("data", (d) => stderr.push(String(d)));
+    const code = await new Promise((resolve) => second.proc.on("exit", resolve));
+    expect(code).toBe(1);
+    expect(stderr.join("")).toContain("another supervisor");
+    expect(stderr.join("")).not.toMatch(/\n\s+at /);
+    expect(isPidAlive(proc.pid ?? 0)).toBe(true);
+    expect(hub.readAgents().alice.status).not.toBe("stopped");
+  }, 60000);
+
+  it("leaves no agent behind when a later one fails to start", async () => {
+    const missing = path.join(tmp, "no-such-dir");
+    const { proc, hub } = startFleet("rollback", ["up", "--agent", "alice", "--agent", `bob:${missing}`]);
+    const stderr: string[] = [];
+    proc.stderr!.on("data", (d) => stderr.push(String(d)));
+    const code = await new Promise((resolve) => proc.on("exit", resolve));
+    expect(code).toBe(1);
+    expect(stderr.join("")).toContain("cwd does not exist");
+    expect(stderr.join("")).not.toMatch(/\n\s+at /);
+
+    const alice = hub.readAgents().alice;
+    await until("alice's bridge to go", async () => !(await bridgeListening(alice.pipeIn!)));
+    expect(hub.readAgents().alice.status).toBe("stopped");
+    expect(hub.supervisorAlive()).toBe(false);
+  }, 60000);
+
+  it("rejects typos at the terminal instead of sending them to agents", async () => {
+    const { proc, hub } = startFleet("typos", ["up", "--agent", "alice"]);
+    await idle(hub, ["alice"]);
+    const banner = firstMatch(proc, /unknown command "\/stat"[\s\S]*no agent or channel "nosuch"/);
+    proc.stdin!.write("/stat\n@nosuch hello\n");
+    await banner;
+    expect(hub.tailMessages(20).filter((m) => m.kind === "chat")).toHaveLength(0);
+  }, 60000);
+
+  it("reports a model that goes silent", async () => {
+    const { hub } = startFleet("stall", ["serve", "--agent", "alice"], { PI_FLEET_STALL_MS: "1500" });
+    await idle(hub, ["alice"]);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[hang]]" });
+    await until("the stall notice", () => hub.tailMessages(20).find((m) => m.text.includes('"alice" has had no answer from its model')));
+    expect(hub.readAgents().alice.status).toBe("busy");
+  }, 60000);
+
+  it("reports a run that ends in a model error", async () => {
+    const { hub } = startFleet("modelerror", ["serve", "--agent", "alice"]);
+    await idle(hub, ["alice"]);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[fail]]" });
+    await until("the error notice", () => hub.tailMessages(20).find((m) => m.text.includes('agent "alice" stopped on a model error')), 45000);
+  }, 60000);
+
+  it("honours lean in fleet.json", async () => {
+    const hubDir = path.join(tmp, "lean");
+    fs.mkdirSync(hubDir, { recursive: true });
+    fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ agents: [{ name: "small", lean: true }, { name: "big" }] }));
+    const { hub } = startFleet("lean", ["serve"]);
+    await idle(hub, ["small", "big"]);
+    hub.appendMessage({ from: "user", to: "small", kind: "chat", text: "hello small" });
+    hub.appendMessage({ from: "user", to: "big", kind: "chat", text: "hello big" });
+    const asked = async (agent: string) => (await llmLog()).find((r) => r.agent === agent);
+    const small = await until("small to be asked", () => asked("small"));
+    const big = await until("big to be asked", () => asked("big"));
+    expect(small.conversation).toContain('Fleet (you are "small")');
+    expect(big.conversation).not.toContain('Fleet (you are "big")');
+  }, 60000);
+
   it("pauses a ping-pong at the hop limit, and the human restarts the fleet", async () => {
     const { hub } = startFleet("hops", ["serve", "--agent", "alice", "--agent", "bob", "--max-hops", "4"]);
     await idle(hub, ["alice", "bob"]);
@@ -234,10 +318,20 @@ describe("fleet end to end", () => {
     await idle(hub, ["runaway"]);
     hub.appendMessage({ from: "user", to: "runaway", kind: "chat", text: "[[runon]]" });
 
-    await until("the turn limit notice", () => hub.tailMessages(20).find((m) => m.text.includes(`"runaway" was stopped after 5 turns`)));
+    await until("the turn limit notice", () => hub.tailMessages(20).find((m) => m.text.includes(`"runaway" was stopped: 5 turns in one run`)));
     await idle(hub, ["runaway"]);
     await expectQuiet();
     expect((await llmLog()).filter((r) => r.agent === "runaway").length).toBeLessThanOrEqual(6);
+  }, 60000);
+
+  it("stops an agent that keeps repeating itself", async () => {
+    const { hub } = startFleet("repeat", ["serve", "--agent", "parrot"]);
+    await idle(hub, ["parrot"]);
+    hub.appendMessage({ from: "user", to: "parrot", kind: "chat", text: "[[repeat]]" });
+    await until("the repeat notice", () => hub.tailMessages(20).find((m) => m.text.includes("same fleet call 3 times")));
+    await idle(hub, ["parrot"]);
+    await expectQuiet();
+    expect(hub.tailMessages(20).filter((m) => m.from === "parrot")).toHaveLength(3);
   }, 60000);
 
   it("Stop all aborts every run, drops what is queued, and holds the fleet", async () => {

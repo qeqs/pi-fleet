@@ -174,6 +174,12 @@ export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Li
   bridge.unref();
   const bridgePid = bridge.pid ?? 0;
   hub.updateAgent(name, { name, pid: bridgePid, cwd, status: "starting", startedAt: Date.now(), logFile, pipeIn, pipeOut, model, role });
-  const rpc = await PiRpcBridge.connect(pipeIn, pipeOut, bridgePid);
-  return { name, cwd, rpc, model };
+  try {
+    const rpc = await PiRpcBridge.connect(pipeIn, pipeOut, bridgePid);
+    return { name, cwd, rpc, model };
+  } catch (err) {
+    killProcessTree(bridgePid);
+    hub.updateAgent(name, { status: "stopped" });
+    throw new Error(`agent "${name}" did not start: ${(err as Error).message} (log: ${logFile})`);
+  }
 }

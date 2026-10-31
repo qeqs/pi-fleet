@@ -9,7 +9,7 @@
  *
  * Run with: npm run desktop
  */
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, dialog, shell } from "electron";
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
 import net from "node:net";
@@ -24,6 +24,7 @@ const FLEET = path.join(ROOT, "src", "fleet.ts");
 const GUI_TOKEN = crypto.randomBytes(24).toString("base64url");
 
 let supervisor = null;
+let supervisorOutput = "";
 let mainWindow = null;
 
 /** Find a free TCP port on localhost. */
@@ -62,12 +63,20 @@ async function startSupervisor() {
   );
   const tag = (s) => String(s).split("\n").map((l) => `[supervisor] ${l}`).join("\n");
   supervisor.stdout.on("data", (d) => process.stdout.write(tag(d)));
-  supervisor.stderr.on("data", (d) => process.stderr.write(tag(d)));
+  supervisor.stderr.on("data", (d) => {
+    process.stderr.write(tag(d));
+    supervisorOutput = (supervisorOutput + d).slice(-2000);
+  });
   supervisor.on("exit", (code) => {
     console.log(`[desktop] supervisor exited (${code})`);
     if (mainWindow && !mainWindow.isDestroyed()) app.quit();
   });
-  return `http://127.0.0.1:${port}/?token=${GUI_TOKEN}`;
+  // it can die before the page ever answers: the wait below must not outlast it
+  const exited = new Promise((_, reject) => {
+    supervisor.once("error", (e) => reject(new Error(`could not start the supervisor: ${e.message}`)));
+    supervisor.once("exit", (code) => reject(new Error(supervisorOutput.trim() || `the supervisor exited (${code})`)));
+  });
+  return { url: `http://127.0.0.1:${port}/?token=${GUI_TOKEN}`, exited };
 }
 
 function stopSupervisor() {
@@ -83,8 +92,9 @@ function stopSupervisor() {
 }
 
 async function createWindow() {
-  const url = await startSupervisor();
-  await waitForHttp(url);
+  const { url, exited } = await startSupervisor();
+  await Promise.race([waitForHttp(url), exited]);
+  exited.catch(() => {}); // from here on, the exit handler above deals with it
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 840,
@@ -103,8 +113,9 @@ async function createWindow() {
 
 app.whenReady().then(() => {
   createWindow().catch((e) => {
-    console.error("[desktop] failed to start:", e);
+    console.error("[desktop] failed to start:", e.message);
     stopSupervisor();
+    dialog.showErrorBox("pi-fleet could not start", e.message);
     app.quit();
   });
   app.on("activate", () => {

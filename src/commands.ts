@@ -30,11 +30,12 @@ export function cmdList(dir: string | undefined, baseCwd: string) {
 export async function cmdStop(target: string | undefined, dir: string | undefined, baseCwd: string) {
   const hub = new Hub(dir ?? path.join(baseCwd, ".pi-fleet"));
   const agents = Object.values(hub.readAgents());
-  const targets = target === "all" || !target ? agents : agents.filter((a) => a.name === target);
-  if (targets.length === 0) {
-    console.log(`no agent "${target}"`);
+  if (agents.length === 0) {
+    console.log("no agents registered in this hub");
     return;
   }
+  const targets = target === "all" || !target ? agents : agents.filter((a) => a.name === target);
+  if (targets.length === 0) throw new Error(`no agent "${target}". Agents: ${agents.map((a) => a.name).join(", ")}.`);
   for (const a of targets) {
     if (!isPidAlive(a.pid)) {
       console.log(`${a.name}: not running (pid ${a.pid})`);

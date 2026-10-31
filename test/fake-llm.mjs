@@ -3,7 +3,10 @@
 //   "Routing task for #x"  -> calls route(); targets from `route=a,b` in the text,
 //                             else the SDLC default (user -> planner, otherwise nobody)
 //   [[slow N]]             -> streams for N seconds, keeping the agent busy
+//   [[hang]]               -> never answers
+//   [[fail]]               -> answers with an error that pi does not retry
 //   [[runon]]              -> never ends the run: every turn calls another tool
+//   [[repeat]]             -> never ends the run: every turn posts the same message
 //   [[pingpong a b]]       -> a and b keep sending each other this same message
 //   no directive           -> SDLC defaults: planner mentions implementer, implementer
 //                             mentions reviewer, reviewer posts APPROVE to #group
@@ -31,6 +34,7 @@ function decide(agent, messages) {
   const last = messages.at(-1);
   const lastUser = textOf([...messages].reverse().find((m) => m.role === "user"));
   if (lastUser.includes("[[runon]]")) return tool("fleet_agents", {});
+  if (lastUser.includes("[[repeat]]")) return tool("fleet_send", { to: "group", text: "Already done." });
   if (last.role === "tool") return say(`ok (${agent})`);
   const user = textOf(last);
   const pong = /\[\[pingpong ([\w-]+) ([\w-]+)\]\]/.exec(user);
@@ -43,6 +47,8 @@ function decide(agent, messages) {
     const respond = explicit ? explicit.split(",") : from === "user" ? ["planner"] : [];
     return tool("route", { channel: routing[1], respond, summary: `latest from ${from}` });
   }
+  if (user.includes("[[hang]]")) return { kind: "hang" };
+  if (user.includes("[[fail]]")) return { kind: "fail" };
   const slow = /\[\[slow (\d+)\]\]/.exec(user);
   if (slow) return { kind: "slow", seconds: Number(slow[1]) };
   if (agent === "planner") return tool("fleet_mention", { agents: ["implementer"], text: "Please implement the feature." });
@@ -55,6 +61,12 @@ const chunk = (delta, finish = null) =>
   `data: ${JSON.stringify({ id: "fake", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
 
 async function stream(res, decision) {
+  if (decision.kind === "hang") return;
+  if (decision.kind === "fail") {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "scripted failure", type: "invalid_request_error" } }));
+    return;
+  }
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
   res.write(chunk({ role: "assistant", content: "" }));
   if (decision.kind === "slow") {

@@ -48,30 +48,33 @@ export function isLimit(n: unknown): n is number {
   return typeof n === "number" && Number.isInteger(n) && n >= 0;
 }
 
-/** Read the config, or null if it doesn't exist / is invalid. */
+/** Read the config, or null if there is none. Throws if the file is unusable, naming the file. */
 export function loadFleetConfig(hubDir: string): FleetConfig | null {
   const p = configPath(hubDir);
   if (!fs.existsSync(p)) return null;
+  let raw: Partial<FleetConfig>;
   try {
-    const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<FleetConfig>;
-    return {
-      defaultModel: raw.defaultModel,
-      maxTurns: isLimit(raw.maxTurns) ? raw.maxTurns : undefined,
-      maxHops: isLimit(raw.maxHops) ? raw.maxHops : undefined,
-      agents: Array.isArray(raw.agents)
-        ? raw.agents
-            .filter((a): a is FleetAgentConfig => !!a && typeof a.name === "string")
-            .map((a) => ({
-              ...a,
-              extensions: Array.isArray(a.extensions)
-                ? a.extensions.filter((e): e is string => typeof e === "string")
-                : undefined,
-            }))
-        : [],
-    };
-  } catch {
-    return null;
+    raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<FleetConfig>;
+  } catch (e) {
+    throw new Error(`invalid fleet config ${p}: ${(e as Error).message}`);
   }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`invalid fleet config ${p}: expected an object`);
+  if (raw.agents !== undefined && !Array.isArray(raw.agents)) throw new Error(`invalid fleet config ${p}: "agents" must be a list`);
+  for (const a of raw.agents ?? []) {
+    if (!a || typeof a.name !== "string") throw new Error(`invalid fleet config ${p}: every agent needs a "name"`);
+  }
+  for (const field of ["maxTurns", "maxHops"] as const) {
+    if (raw[field] !== undefined && !isLimit(raw[field])) throw new Error(`invalid fleet config ${p}: "${field}" must be a whole number (0 means no limit)`);
+  }
+  return {
+    defaultModel: raw.defaultModel,
+    maxTurns: raw.maxTurns,
+    maxHops: raw.maxHops,
+    agents: (raw.agents ?? []).map((a) => ({
+      ...a,
+      extensions: Array.isArray(a.extensions) ? a.extensions.filter((e): e is string => typeof e === "string") : undefined,
+    })),
+  };
 }
 
 export function saveFleetConfig(hubDir: string, cfg: FleetConfig): void {

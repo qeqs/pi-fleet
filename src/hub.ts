@@ -15,19 +15,19 @@ import crypto from "node:crypto";
 export type MessageKind = "chat" | "system" | "activity";
 
 /**
- * Hard cap on a single bus message's text length. Very long lines would bloat
+ * Longest message a person or agent may post. Very long lines would bloat
  * messages.jsonl and the inbox prompt (especially for small models). Override
- * with the PI_FLEET_MAX_MSG env var. Agents can split longer content into
- * several messages.
+ * with the PI_FLEET_MAX_MSG env var.
  */
 export const MAX_MESSAGE_LEN: number = (() => {
   const v = parseInt(process.env.PI_FLEET_MAX_MSG ?? "", 10);
   return Number.isFinite(v) && v > 0 ? v : 2000;
 })();
 
-export function truncateMessage(text: string, max: number = MAX_MESSAGE_LEN): { text: string; truncated: boolean } {
-  if (text.length <= max) return { text, truncated: false };
-  return { text: text.slice(0, max) + "…(truncated)", truncated: true };
+/** Why a message is too long to post, or null if it fits. Posting one is refused, never cut. */
+export function messageTooLong(text: string, max: number = MAX_MESSAGE_LEN): string | null {
+  if (text.length <= max) return null;
+  return `message is ${text.length} characters, over the ${max} limit (PI_FLEET_MAX_MSG): split it into several messages`;
 }
 
 /** Turns one agent may take in a single run before it is aborted (0 = no limit). */
@@ -174,10 +174,30 @@ export class Hub {
 
   appendMessage(msg: Omit<FleetMessage, "id" | "ts">): FleetMessage {
     this.ensureDir();
-    const { text } = truncateMessage(msg.text);
-    const full: FleetMessage = { id: crypto.randomUUID(), ts: Date.now(), ...msg, text };
+    const full: FleetMessage = { id: crypto.randomUUID(), ts: Date.now(), ...msg };
     fs.appendFileSync(this.messagesFile, JSON.stringify(full) + "\n", "utf8");
     return full;
+  }
+
+  /** Post for the human, refusing what would be dropped: an unknown address or an over-long text. */
+  postUserMessage(to: string, text: string): FleetMessage {
+    const tooLong = messageTooLong(text);
+    if (tooLong) throw new Error(tooLong);
+    if (!this.targetKind(to)) throw new Error(this.unknownTarget(to));
+    return this.appendMessage({ from: "user", to, kind: "chat", text });
+  }
+
+  /** What an address names: a channel (including the default one), an agent, or nothing. */
+  targetKind(to: string): "channel" | "agent" | null {
+    if (to === DEFAULT_CHANNEL || this.getChannel(to)) return "channel";
+    return this.readAgents()[to] ? "agent" : null;
+  }
+
+  /** Error text for an address that names nothing, listing what does exist. */
+  unknownTarget(to: string): string {
+    const agents = Object.keys(this.readAgents()).join(", ") || "(none)";
+    const channels = this.readChannels().map((c) => c.name).join(", ") || "(none)";
+    return `no agent or channel "${to}". Agents: ${agents}. Channels: ${channels}.`;
   }
 
   /** Read complete messages at/after a byte offset. Returns the next offset. */
@@ -245,8 +265,7 @@ export class Hub {
   }
 
   updateAgent(name: string, patch: Partial<AgentInfo>): AgentInfo {
-    this.acquireLock();
-    try {
+    return this.withLock(() => {
       const agents = this.readAgents();
       const prev = agents[name] ?? {
         name,
@@ -260,20 +279,15 @@ export class Hub {
       agents[name] = next;
       this.writeAgents(agents);
       return next;
-    } finally {
-      this.releaseLock();
-    }
+    });
   }
 
   removeAgent(name: string): void {
-    this.acquireLock();
-    try {
+    this.withLock(() => {
       const agents = this.readAgents();
       delete agents[name];
       this.writeAgents(agents);
-    } finally {
-      this.releaseLock();
-    }
+    });
   }
 
   private writeAgents(agents: Record<string, AgentInfo>): void {
@@ -291,8 +305,8 @@ export class Hub {
 
   // ---------- registry locking ----------
   //
-  // Multiple agents (separate processes) read-modify-write agents.json
-  // concurrently. The write itself is atomic (tmp+rename), but the
+  // Multiple agents (separate processes) read-modify-write agents.json and
+  // channels.json concurrently. The write itself is atomic (tmp+rename), but the
   // read-modify-write is not: two agents could read the same state and one's
   // update would be lost. A simple advisory lock file serializes the
   // critical section. Works cross-platform (O_EXCL create). A stale lock
@@ -300,6 +314,15 @@ export class Hub {
 
   private get lockFile(): string {
     return this.agentsFile + ".lock";
+  }
+
+  private withLock<T>(fn: () => T): T {
+    this.acquireLock();
+    try {
+      return fn();
+    } finally {
+      this.releaseLock();
+    }
   }
 
   private acquireLock(timeoutMs = 2000): void {
@@ -445,25 +468,53 @@ export class Hub {
   }
 
   upsertChannel(channel: ChannelConfig): ChannelConfig {
-    const channels = this.readChannels();
-    const i = channels.findIndex((c) => c.name === channel.name);
-    if (i >= 0) channels[i] = { ...channels[i], ...channel };
-    else channels.push(channel);
-    this.writeChannels(channels);
-    return channel;
+    return this.withLock(() => {
+      const channels = this.readChannels();
+      const i = channels.findIndex((c) => c.name === channel.name);
+      if (i >= 0) channels[i] = { ...channels[i], ...channel };
+      else channels.push(channel);
+      this.writeChannels(channels);
+      return channel;
+    });
   }
 
   removeChannel(name: string): void {
-    this.writeChannels(this.readChannels().filter((c) => c.name !== name));
+    this.withLock(() => this.writeChannels(this.readChannels().filter((c) => c.name !== name)));
   }
 
   setChannelSummary(name: string, summary: string): void {
-    const channels = this.readChannels();
-    const c = channels.find((x) => x.name === name);
-    if (c) {
-      c.summary = summary;
-      this.writeChannels(channels);
-    }
+    this.withLock(() => {
+      const channels = this.readChannels();
+      const c = channels.find((x) => x.name === name);
+      if (c) {
+        c.summary = summary;
+        this.writeChannels(channels);
+      }
+    });
+  }
+
+  /**
+   * Give every channel whose router is not running a running member, preferring
+   * an agent with the supervisor role. A channel with nobody running keeps its
+   * router, since it can do nothing until someone comes back. Returns the changes.
+   */
+  reassignSupervisors(running: string[]): { channel: string; supervisor: string }[] {
+    return this.withLock(() => {
+      const channels = this.readChannels();
+      const agents = this.readAgents();
+      const changed: { channel: string; supervisor: string }[] = [];
+      for (const c of channels) {
+        const current = c.supervisor ?? c.members[0];
+        if (current === undefined || running.includes(current)) continue;
+        const candidates = c.members.filter((m) => running.includes(m));
+        const next = candidates.find((m) => agents[m]?.role === "supervisor") ?? candidates[0];
+        if (!next) continue;
+        c.supervisor = next;
+        changed.push({ channel: c.name, supervisor: next });
+      }
+      if (changed.length > 0) this.writeChannels(channels);
+      return changed;
+    });
   }
 
   /**
@@ -501,7 +552,7 @@ export class Hub {
   writeSupervisorHeartbeat(): void {
     this.ensureDir();
     try {
-      fs.writeFileSync(this.supervisorFile, JSON.stringify({ ts: Date.now() }), "utf8");
+      fs.writeFileSync(this.supervisorFile, JSON.stringify({ ts: Date.now(), pid: process.pid }), "utf8");
     } catch {
       // ignore
     }
@@ -521,6 +572,17 @@ export class Hub {
       return typeof obj.ts === "number" ? obj.ts : 0;
     } catch {
       return 0;
+    }
+  }
+
+  /** Pid of another supervisor attached to this hub, or null if there is none. */
+  otherSupervisor(maxAgeMs = 8000): number | null {
+    if (!this.supervisorAlive(maxAgeMs)) return null;
+    try {
+      const { pid } = JSON.parse(fs.readFileSync(this.supervisorFile, "utf8")) as { pid?: number };
+      return pid && pid !== process.pid && isPidAlive(pid) ? pid : null;
+    } catch {
+      return null;
     }
   }
 
@@ -560,9 +622,14 @@ export function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-export function formatMessage(m: FleetMessage, lookup?: Map<string, FleetMessage>): string {
+/** An address as people read it: `#channel` or `@agent`. */
+export function addressLabel(to: string, channels: ChannelConfig[] = []): string {
+  return to === DEFAULT_CHANNEL || channels.some((c) => c.name === to) ? `#${to}` : `@${to}`;
+}
+
+export function formatMessage(m: FleetMessage, lookup?: Map<string, FleetMessage>, channels: ChannelConfig[] = []): string {
   const t = new Date(m.ts).toLocaleTimeString([], { hour12: false });
-  const arrow = m.to === "group" ? "#" : `@${m.to}`;
+  const arrow = addressLabel(m.to, channels);
   const prefix = m.kind === "system" ? "·" : m.kind === "activity" ? "⚙" : "•";
   const orig = m.replyTo ? lookup?.get(m.replyTo) : undefined;
   const reply = m.replyTo ? ` ↪${shortId(m.replyTo)}${orig ? `(${orig.from})` : ""}` : "";

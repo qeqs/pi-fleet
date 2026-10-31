@@ -82,9 +82,12 @@ fleet> # refactor the parser and add tests
   resumes the fleet and restarts the hop count. `0` turns a limit off. Both limits can also be
   set in `fleet.json` (`maxTurns`, `maxHops`); a flag wins over the config, and agents that
   re-attach keep the turn limit they started with.
-- **Message limits**: each bus message is capped at `MAX_MESSAGE_LEN` chars (default
-  2000, override with `PI_FLEET_MAX_MSG`); longer text is truncated with a marker and
-  `fleet_send` tells the agent so it can split it.
+- **Failures are visible**: a crashed agent is marked stopped with a notice in `#group`, and
+  its channels move to a running member. A run that ends in a model error says so, and so does
+  a model that stays silent mid-turn for 5 minutes (`PI_FLEET_STALL_MS`, `0` turns it off; only
+  the wait for the model is timed, not tools). Only one supervisor can attach to a hub.
+- **Message limits**: a message is refused, never cut, above `MAX_MESSAGE_LEN` chars (default
+  2000, override with `PI_FLEET_MAX_MSG`): you see the reason, and an agent is told to split it.
 - **Detached mode + auto-resume**: `--detach` keeps agents running when you `/quit`
   (the bridges survive). Re-running `fleet up` **auto-resumes** — it re-attaches to any
   bridge still alive (registry pid alive + pipes present) instead of re-spawning, so
@@ -135,6 +138,8 @@ npm run fleet -- up
 npm run fleet -- list
 npm run fleet -- stop [name|all]
 npm run fleet -- log [name]
+npm run fleet -- doctor     # check pi, the hub, the config and the models
+npm run fleet -- help
 ```
 
 Group chat input:
@@ -150,6 +155,7 @@ Group chat input:
 | `/new name [cwd] [model]` | spawn an agent |
 | `/stop name` | stop an agent |
 | `/stopall` | abort every run and pause the fleet until your next message |
+| `/help` | list these commands |
 | `/quit` | stop all, exit |
 
 ## GUI (web UI)

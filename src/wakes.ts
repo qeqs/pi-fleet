@@ -20,7 +20,7 @@ export function computeWakes(messages: FleetMessage[], hub: Hub, lookup: Map<str
       if (m.from === name) continue; // never wake self
       const d = wakeDecision(m, name, lookup, channels);
       if (!d.wake) continue;
-      const text = d.mode === "route" && d.channel ? routingPrompt(d.channel, m, agents) : formatInbox([m], lookup);
+      const text = d.mode === "route" && d.channel ? routingPrompt(d.channel, m, agents) : formatInbox([m], lookup, channels);
       wakes.set(name, wakes.has(name) ? `${wakes.get(name)}\n\n${text}` : text);
     }
   }

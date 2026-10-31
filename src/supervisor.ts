@@ -5,16 +5,17 @@
 import { execSync } from "node:child_process";
 import path from "node:path";
 import readline from "node:readline";
-import { Hub, isPidAlive, formatMessage, shortId, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type FleetMessage } from "./hub.ts";
+import { Hub, isPidAlive, formatMessage, shortId, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type ChannelConfig, type FleetMessage } from "./hub.ts";
 import { PiRpcBridge, bridgeListening } from "./rpc.ts";
-import { agentNameFromSpec, agentCwdFromSpec, agentModelFromSpec, agentRoleFromSpec } from "./spec.ts";
+import { agentNameFromSpec, agentCwdFromSpec, agentModelFromSpec, agentRoleFromSpec, isValidAgentName } from "./spec.ts";
+import { CHAT_HELP, parseChatLine } from "./chat.ts";
 import { GuiServer } from "./gui.ts";
 import { loadFleetConfig, agentSpecFromConfig, saveFleetConfig, configPath } from "./config.ts";
 import { expandTemplate, templateNames, templateDescription } from "./templates.ts";
 import { discoverExtensions, readMcpConfig, writeMcpConfig } from "./pi-resources.ts";
 import { computeWakes } from "./wakes.ts";
 import { killProcessTree, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
-import type { FleetArgs, Limits } from "./cli.ts";
+import { UsageError, type FleetArgs, type Limits } from "./cli.ts";
 
 /** A wake pi refuses (e.g. mid-compaction) is retried for about a minute before it is reported lost. */
 const WAKE_RETRIES = 12;
@@ -32,6 +33,8 @@ function printBanner() {
 export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) {
   const hub = new Hub(args.dir ?? path.join(baseCwd, ".pi-fleet"));
   const agents = new Map<string, AgentHandle>();
+  const spawnedHere = new Set<string>(); // not re-attached: this run answers for them if the start fails
+  const stopping = new Set<string>(); // stopped on purpose, so their exit is not a crash
   const leanCache = new Map<string, number | undefined>();
   let shuttingDown = false;
   let gui: GuiServer | null = null;
@@ -43,10 +46,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   // Fleet template: --template expands to a set of agents (sugar for --agent flags).
   if (args.agents.length === 0 && args.template) {
     const t = expandTemplate(args.template);
-    if (!t) {
-      console.error(`unknown template "${args.template}" (available: ${templateNames().join(", ")})`);
-      process.exit(1);
-    }
+    if (!t) throw new UsageError(`unknown template "${args.template}" (available: ${templateNames().join(", ")})`);
     args.agents = t.map(agentSpecFromConfig);
     console.log(`  ⚙ template "${args.template}": ${t.length} agent(s) — ${templateDescription(args.template)}`);
   }
@@ -66,10 +66,20 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   // Look up per-agent extensions (plugins) from the config by name.
   const extensionsFor = (name: string): string[] | undefined =>
     fleetCfg?.agents.find((a) => a.name === name)?.extensions;
+  const leanFor = (name: string): boolean | undefined => args.lean ?? fleetCfg?.agents.find((a) => a.name === name)?.lean;
   const limits: Limits = {
     maxTurns: args.maxTurns ?? fleetCfg?.maxTurns ?? DEFAULT_MAX_TURNS,
     maxHops: args.maxHops ?? fleetCfg?.maxHops ?? DEFAULT_MAX_HOPS,
   };
+
+  // One supervisor per hub: two would both push every wake, so agents would run twice.
+  const other = hub.otherSupervisor();
+  if (other) throw new Error(`another supervisor (pid ${other}) is already running on ${hub.dir}. Stop it, or use --dir for a separate fleet.`);
+
+  // Supervisor heartbeat: agents read this to know the supervisor is attached
+  // (and will push wakes) vs. detached (they must self-wake via polling).
+  const heartbeat = setInterval(() => hub.writeSupervisorHeartbeat(), 2000);
+  hub.writeSupervisorHeartbeat();
 
   // Pre-probe context windows for all unique initial models (parallel, cached)
   // so lean auto-detection is instant by the time we spawn.
@@ -123,14 +133,19 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     handle.rpc.onExit = (code) => {
       agents.delete(name);
       print(`  ✕ [${name}] exited (${code})`);
+      if (shuttingDown || stopping.delete(name)) return;
+      hub.updateAgent(name, { status: "stopped" });
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" stopped unexpectedly. Its log: ${hub.logFileFor(name)}` });
       gui?.broadcast("status", { name, status: "stopped" });
+      reassignRouters();
     };
   }
 
   async function spawnAndTrack(name: string, cwd: string, model?: string, role?: string, extensions?: string[]) {
     if (agents.has(name)) throw new Error(`agent "${name}" already running`);
-    const lean = await resolveLean(model, args.lean, leanCache);
+    const lean = await resolveLean(model, leanFor(name), leanCache);
     const handle = await spawnAgent(hub, name, cwd, limits, model, lean, role, extensions);
+    spawnedHere.add(name);
     agents.set(name, handle);
     wire(handle, name);
     const modelLabel = model ? ` model=${model}` : "";
@@ -157,25 +172,46 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     print(`  ↻ [${info.name}] re-attached (pid ${handle.rpc.pid}, cwd ${info.cwd})`);
   }
 
+  /** A start that fails partway must not leave agents running with nobody attached. */
+  function abandonStart(): void {
+    shuttingDown = true;
+    clearInterval(heartbeat);
+    hub.clearSupervisorHeartbeat();
+    for (const a of agents.values()) {
+      a.rpc.close();
+      if (spawnedHere.has(a.name)) {
+        killProcessTree(a.rpc.pid);
+        hub.updateAgent(a.name, { status: "stopped" });
+      }
+    }
+  }
+
   // initial agents — auto-resume: re-attach to live bridges, spawn the rest
   const live: AgentInfo[] = [];
   for (const a of Object.values(hub.readAgents())) {
     if (a.pipeIn && a.pipeOut && isPidAlive(a.pid) && (await bridgeListening(a.pipeIn))) live.push(a);
+    // gone without a word (crash, reboot): whatever it last reported no longer holds
+    else if (a.status !== "stopped") hub.updateAgent(a.name, { status: "stopped" });
   }
   const liveByName = new Map(live.map((a) => [a.name, a]));
-  for (const spec of args.agents) {
-    const name = agentNameFromSpec(spec);
-    if (agents.has(name)) continue;
-    const existing = liveByName.get(name);
-    if (existing) {
-      await reattachAndTrack(existing);
-    } else {
-      await spawnAndTrack(name, agentCwdFromSpec(spec, baseCwd), agentModelFromSpec(spec) ?? args.model, agentRoleFromSpec(spec), extensionsFor(name));
+  try {
+    for (const spec of args.agents) {
+      const name = agentNameFromSpec(spec);
+      if (agents.has(name)) continue;
+      const existing = liveByName.get(name);
+      if (existing) {
+        await reattachAndTrack(existing);
+      } else {
+        await spawnAndTrack(name, agentCwdFromSpec(spec, baseCwd), agentModelFromSpec(spec) ?? args.model, agentRoleFromSpec(spec), extensionsFor(name));
+      }
     }
-  }
-  if (args.agents.length === 0) {
-    // no agents specified: re-attach to whatever is still alive
-    for (const a of live) await reattachAndTrack(a);
+    if (args.agents.length === 0) {
+      // no agents specified: re-attach to whatever is still alive
+      for (const a of live) await reattachAndTrack(a);
+    }
+  } catch (err) {
+    abandonStart();
+    throw err;
   }
   if (agents.size === 0) {
     print("  (no agents running — use /new name [cwd] to spawn one)");
@@ -204,18 +240,36 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     shownPaused = reason;
   }
 
+  /** Channels stop when their router does: hand them to a running member and say so. */
+  function reassignRouters(): void {
+    const changes = hub.reassignSupervisors([...agents.keys()]);
+    for (const { channel, supervisor } of changes) {
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `#${channel} is now routed by "${supervisor}"` });
+    }
+    if (changes.length > 0) gui?.broadcast("channels", hub.readChannels());
+  }
+
   // Ensure the default "group" channel exists (all agents as members, a
   // supervisor for routing). Re-run whenever the membership changes.
   function refreshDefaultChannel(): void {
     try {
-      const c = hub.ensureDefaultChannel();
+      hub.ensureDefaultChannel();
+      reassignRouters();
+      const c = hub.getChannel("group");
       gui?.broadcast("channels", hub.readChannels());
-      print(`  # channel "${c.name}" (supervisor: ${c.supervisor ?? "(none)"}, members: ${c.members.join(", ") || "(none)"})`);
+      print(`  # channel "group" (supervisor: ${c?.supervisor ?? "(none)"}, members: ${c?.members.join(", ") || "(none)"})`);
     } catch {
       // ignore
     }
   }
   refreshDefaultChannel();
+
+  function saveChannel(channel: ChannelConfig): void {
+    if (!isValidAgentName(channel.name)) throw new Error(`invalid channel name "${channel.name}": use letters, digits, "_" and "-"`);
+    if (hub.readAgents()[channel.name]) throw new Error(`"${channel.name}" is already an agent: a channel needs its own name`);
+    hub.upsertChannel(channel);
+    gui?.broadcast("channels", hub.readChannels());
+  }
 
   // GUI (optional): a web UI that streams group chat + per-agent RPC events.
   if (args.gui) {
@@ -257,7 +311,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       }),
       stopAll: stopAllRuns,
       onMessage: ({ to, text }) => {
-        hub.appendMessage({ from: "user", to, kind: "chat", text });
+        hub.postUserMessage(to, text);
       },
       onSessionName: async (name, sessionName) => {
         const handle = agents.get(name);
@@ -296,16 +350,19 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         refreshDefaultChannel();
       },
       getChannels: () => hub.readChannels(),
-      upsertChannel: (ch) => {
-        hub.upsertChannel(ch);
-        gui?.broadcast("channels", hub.readChannels());
-      },
+      upsertChannel: saveChannel,
       removeChannel: (name) => {
         if (name !== "group") hub.removeChannel(name);
         gui?.broadcast("channels", hub.readChannels());
       },
     });
-    const port = await gui.start();
+    let port: number;
+    try {
+      port = await gui.start();
+    } catch (err) {
+      abandonStart();
+      throw new Error(`could not start the GUI on port ${args.port ?? "(any)"}: ${(err as Error).message}`);
+    }
     print(`  🖥  GUI: ${gui.url}  (${port})`);
     if (args.host && !["127.0.0.1", "localhost", "::1"].includes(args.host)) {
       print(`  ⚠ GUI is exposed on ${args.host} over plain HTTP: whoever has this link controls the agents`);
@@ -369,10 +426,11 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       }
       const { messages, nextOffset } = hub.readMessagesSince(offset);
       offset = nextOffset;
+      const channels = messages.length > 0 ? hub.readChannels() : [];
       for (const m of messages) {
         lookup.set(m.id, m);
         lookup.set(shortId(m.id), m);
-        print(formatMessage(m, lookup));
+        print(formatMessage(m, lookup, channels));
         gui?.broadcast("message", m);
       }
       pushDirectWakes(messages);
@@ -381,11 +439,6 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       // ignore
     }
   }, 700);
-
-  // Supervisor heartbeat: agents read this to know the supervisor is attached
-  // (and will push wakes) vs. detached (they must self-wake via polling).
-  const heartbeat = setInterval(() => hub.writeSupervisorHeartbeat(), 2000);
-  hub.writeSupervisorHeartbeat();
 
   printBanner();
   if (!headless) {
@@ -408,96 +461,108 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       return;
     }
     print(`  - stopping [${name}]…`);
+    stopping.add(name);
     handle.rpc.close();
     killProcessTree(handle.rpc.pid); // kill the bridge (and its pi child)
     agents.delete(name);
+    hub.updateAgent(name, { status: "stopped" });
+    gui?.broadcast("status", { name, status: "stopped" });
+    reassignRouters();
   }
 
-  if (rl) rl.on("line", async (line) => {
-    const input = line.trim();
-    if (!input) {
+  /** Run one parsed terminal command. */
+  async function runCommand(name: string, cmdArgs: string): Promise<void> {
+    switch (name) {
+      case "help":
+        print(CHAT_HELP);
+        return;
+      case "quit":
+      case "exit":
+        return shutdown();
+      case "agents": {
+        const reg = Object.values(hub.readAgents());
+        print(reg.length ? reg.map((a) => `  ${a.name} [${a.status}] pid ${a.pid} alive=${isPidAlive(a.pid)} cwd ${a.cwd}`).join("\n") : "  (none)");
+        return;
+      }
+      case "stats": {
+        print("  querying session stats…");
+        const rows: string[] = [];
+        for (const [agent, handle] of agents) {
+          try {
+            const resp = await handle.rpc.getStats();
+            const data = ((resp.data ?? resp) as Record<string, any>) ?? {};
+            const tokens = (data.tokens ?? {}) as Record<string, number>;
+            const cost = Number(data.cost ?? 0);
+            const ctx = (data.contextUsage ?? {}) as Record<string, number>;
+            hub.saveStats(agent, data);
+            rows.push(`  ${agent.padEnd(14)} tokens=${String(tokens.total ?? 0).padStart(8)}  cost=$${cost.toFixed(4)}  ctx=${String(ctx.tokens ?? 0)}/${String(ctx.contextWindow ?? "?")}`);
+          } catch (e) {
+            rows.push(`  ${agent.padEnd(14)} (error: ${(e as Error).message})`);
+          }
+        }
+        print(rows.length ? rows.join("\n") : "  (no agents)");
+        return;
+      }
+      case "new": {
+        const parts = cmdArgs.split(/\s+/);
+        const agent = parts[0];
+        const cwd = parts[1] ? path.resolve(parts[1]) : baseCwd;
+        const reg = hub.readAgents()[agent];
+        if (reg && reg.pipeIn && reg.pipeOut && !agents.has(agent) && isPidAlive(reg.pid) && (await bridgeListening(reg.pipeIn))) {
+          await reattachAndTrack(reg);
+        } else {
+          await spawnAndTrack(agent, cwd, parts[2] ?? args.model, parts[3]);
+        }
+        refreshDefaultChannel();
+        return;
+      }
+      case "stopall":
+        print(`  stopped ${await stopAllRuns()} agent(s); your next message resumes the fleet`);
+        return;
+      case "stop":
+        return stopAgent(cmdArgs);
+      case "channel": {
+        const parts = cmdArgs.split(/\s+/).filter(Boolean);
+        if (parts.length === 0) {
+          const channels = hub.readChannels();
+          print(channels.length ? channels.map((c) => `  #${c.name}  supervisor=${c.supervisor ?? "(first)"}  members=${c.members.join(", ") || "(none)"}${c.summary ? "  [summary]" : ""}`).join("\n") : "  (no channels)");
+        } else if (parts[0] === "add") {
+          const channel = parts[1];
+          const members = (parts[2] ?? "").split(",").map((m) => m.trim()).filter(Boolean);
+          const supervisor = parts[3];
+          if (!channel || members.length === 0) {
+            print("  usage: /channel add <name> <m1,m2,...> [supervisor]");
+          } else {
+            saveChannel({ name: channel, members, supervisor });
+            print(`  created #${channel} (members: ${members.join(", ")}, supervisor: ${supervisor ?? members[0]})`);
+          }
+        } else if (parts[0] === "rm") {
+          const channel = parts[1];
+          if (channel && channel !== "group") {
+            hub.removeChannel(channel);
+            gui?.broadcast("channels", hub.readChannels());
+            print(`  removed #${channel}`);
+          } else {
+            print("  (cannot remove the default 'group' channel)");
+          }
+        } else {
+          print("  usage: /channel | /channel add <name> <m1,m2,...> [supervisor] | /channel rm <name>");
+        }
+      }
+    }
+  }
+
+  if (rl) rl.on("line", (line) => {
+    const parsed = parseChatLine(line);
+    if (parsed.kind === "empty") {
       if (interactive) rl!.prompt();
       return;
     }
     (async () => {
       try {
-        if (input === "/quit" || input === "/exit") {
-          return shutdown();
-        } else if (input === "/agents") {
-          const reg = Object.values(hub.readAgents());
-          print(reg.length ? reg.map((a) => `  ${a.name} [${a.status}] pid ${a.pid} alive=${isPidAlive(a.pid)} cwd ${a.cwd}`).join("\n") : "  (none)");
-        } else if (input === "/stats") {
-          print("  querying session stats…");
-          const rows: string[] = [];
-          for (const [name, handle] of agents) {
-            try {
-              const resp = await handle.rpc.getStats();
-              const data = ((resp.data ?? resp) as Record<string, any>) ?? {};
-              const tokens = (data.tokens ?? {}) as Record<string, number>;
-              const cost = Number(data.cost ?? 0);
-              const ctx = (data.contextUsage ?? {}) as Record<string, number>;
-              hub.saveStats(name, data);
-              rows.push(`  ${name.padEnd(14)} tokens=${String(tokens.total ?? 0).padStart(8)}  cost=$${cost.toFixed(4)}  ctx=${String(ctx.tokens ?? 0)}/${String(ctx.contextWindow ?? "?")}`);
-            } catch (e) {
-              rows.push(`  ${name.padEnd(14)} (error: ${(e as Error).message})`);
-            }
-          }
-          print(rows.length ? rows.join("\n") : "  (no agents)");
-        } else if (input.startsWith("/new ")) {
-          const parts = input.slice(5).trim().split(/\s+/);
-          const name = parts[0];
-          const cwd = parts[1] ? path.resolve(parts[1]) : baseCwd;
-          const model = parts[2];
-          const role = parts[3];
-          const reg = hub.readAgents()[name];
-          if (reg && isPidAlive(reg.pid) && reg.pipeIn && reg.pipeOut && !agents.has(name)) {
-            await reattachAndTrack(reg);
-          } else {
-            await spawnAndTrack(name, cwd, model ?? args.model, role);
-          }
-          refreshDefaultChannel();
-        } else if (input === "/stopall") {
-          print(`  stopped ${await stopAllRuns()} agent(s); your next message resumes the fleet`);
-        } else if (input.startsWith("/stop ")) {
-          await stopAgent(input.slice(6).trim());
-        } else if (input.startsWith("@")) {
-          const m = input.match(/^@(\S+)\s+([\s\S]+)$/);
-          if (!m) print("  usage: @name message");
-          else hub.appendMessage({ from: "user", to: m[1], kind: "chat", text: m[2] });
-        } else if (input.startsWith("#")) {
-          if (input.startsWith("# ")) {
-            const text = input.slice(2).trim();
-            if (text) hub.appendMessage({ from: "user", to: "group", kind: "chat", text });
-          } else {
-            const m = input.match(/^#(\S+)\s+([\s\S]+)$/);
-            if (m) hub.appendMessage({ from: "user", to: m[1], kind: "chat", text: m[2] });
-            else print("  usage: #name message   (or '# message' for the group)");
-          }
-        } else if (input === "/channel" || input.startsWith("/channel ")) {
-          const parts = input.slice(8).trim().split(/\s+/).filter(Boolean);
-          if (parts.length === 0) {
-            const channels = hub.readChannels();
-            print(channels.length ? channels.map((c) => `  #${c.name}  supervisor=${c.supervisor ?? "(first)"}  members=${c.members.join(", ") || "(none)"}${c.summary ? "  [summary]" : ""}`).join("\n") : "  (no channels)");
-          } else if (parts[0] === "add") {
-            const name = parts[1];
-            const members = (parts[2] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-            const supervisor = parts[3];
-            if (!name || members.length === 0) { print("  usage: /channel add <name> <m1,m2,...> [supervisor]"); }
-            else {
-              hub.upsertChannel({ name, members, supervisor });
-              gui?.broadcast("channels", hub.readChannels());
-              print(`  created #${name} (members: ${members.join(", ")}, supervisor: ${supervisor ?? members[0]})`);
-            }
-          } else if (parts[0] === "rm") {
-            const name = parts[1];
-            if (name && name !== "group") { hub.removeChannel(name); gui?.broadcast("channels", hub.readChannels()); print(`  removed #${name}`); }
-            else print("  (cannot remove the default 'group' channel)");
-          } else {
-            print("  usage: /channel | /channel add <name> <m1,m2,...> [supervisor] | /channel rm <name>");
-          }
-        } else {
-          hub.appendMessage({ from: "user", to: "group", kind: "chat", text: input });
-        }
+        if (parsed.kind === "error") print(`  ${parsed.message}`);
+        else if (parsed.kind === "message") hub.postUserMessage(parsed.to, parsed.text);
+        else await runCommand(parsed.name, parsed.args);
       } catch (err) {
         print(`  error: ${(err as Error).message}`);
       } finally {

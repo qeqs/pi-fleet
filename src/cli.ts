@@ -1,6 +1,6 @@
 /**
- * Command-line parsing for `fleet`. Side-effect free apart from refusing bad
- * values, so it can be unit-tested (fleet.ts is the entry point and runs on import).
+ * Command-line parsing for `fleet`. Side-effect free, so it can be unit-tested
+ * (fleet.ts is the entry point and runs on import).
  */
 import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS } from "./hub.ts";
 import { isLimit } from "./config.ts";
@@ -11,32 +11,46 @@ export interface Limits {
   maxHops: number;
 }
 
+/** A mistake on the command line: reported as a message with a pointer to --help, never a stack trace. */
+export class UsageError extends Error {}
+
 function limitArg(flag: string, value: string | undefined): number {
   const n = Number(value);
-  if (value === undefined || value === "" || !isLimit(n)) {
-    console.error(`${flag} needs a whole number (0 means no limit), got "${value}"`);
-    process.exit(1);
+  if (value === undefined || value === "" || !isLimit(n)) throw new UsageError(`${flag} needs a whole number (0 means no limit), got "${value}"`);
+  return n;
+}
+
+function portArg(value: string | undefined): number {
+  const n = Number(value);
+  if (value === undefined || value === "" || !Number.isInteger(n) || n < 0 || n > 65535) {
+    throw new UsageError(`--port needs a number from 0 to 65535, got "${value}"`);
   }
   return n;
+}
+
+function valueArg(flag: string, value: string | undefined): string {
+  if (value === undefined || value.startsWith("--")) throw new UsageError(`${flag} needs a value`);
+  return value;
 }
 
 export function parseArgs(argv: string[]): { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; rest: string[] } {
   const out: { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; rest: string[] } = { agents: [], rest: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--dir") out.dir = argv[++i];
-    else if (a === "--agent") out.agents.push(argv[++i]);
-    else if (a === "--model") out.model = argv[++i];
-    else if (a === "--template") out.template = argv[++i];
+    if (a === "--dir") out.dir = valueArg(a, argv[++i]);
+    else if (a === "--agent") out.agents.push(valueArg(a, argv[++i]));
+    else if (a === "--model") out.model = valueArg(a, argv[++i]);
+    else if (a === "--template") out.template = valueArg(a, argv[++i]);
     else if (a === "--lean") out.lean = true;
     else if (a === "--no-lean") out.lean = false;
     else if (a === "--detach") out.detach = true;
     else if (a === "--gui") out.gui = true;
     else if (a === "--open") out.open = true;
-    else if (a === "--port") out.port = parseInt(argv[++i], 10);
-    else if (a === "--host") out.host = argv[++i];
+    else if (a === "--port") out.port = portArg(argv[++i]);
+    else if (a === "--host") out.host = valueArg(a, argv[++i]);
     else if (a === "--max-turns") out.maxTurns = limitArg(a, argv[++i]);
     else if (a === "--max-hops") out.maxHops = limitArg(a, argv[++i]);
+    else if (a.startsWith("-")) throw new UsageError(`unknown option "${a}"`);
     else out.rest.push(a);
   }
   return out;
@@ -44,7 +58,7 @@ export function parseArgs(argv: string[]): { dir?: string; agents: string[]; mod
 
 export type FleetArgs = ReturnType<typeof parseArgs>;
 
-export const USAGE =       `pi-fleet — multi-agent supervisor for pi
+export const USAGE = `pi-fleet — multi-agent supervisor for pi
 
 Usage:
   npm run fleet -- up --agent name[:cwd][:model][:role] [--agent name2[:cwd2][:model2]] [--model M] [--lean] [--detach] [--gui [--open] [--port N]] [--max-turns N] [--max-hops N] [--dir DIR]
@@ -56,6 +70,8 @@ Usage:
   npm run fleet -- config [--dir DIR]        # show fleet.json
   npm run fleet -- rename <agent> <name>     # set an agent's pi session display name
   npm run fleet -- serve [--agent ... | --template ...] [--port N] [--host H]   # headless web UI
+  npm run fleet -- doctor [--dir DIR]        # check pi, the hub, the config and the models
+  npm run fleet -- help                      # this text
 
   With no --agent flags, up reads the fleet from <dir>/fleet.json (see: fleet init).
 

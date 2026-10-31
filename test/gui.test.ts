@@ -61,7 +61,10 @@ beforeAll(async () => {
   gui = new GuiServer({
     token: TOKEN,
     getSnapshot: () => ({ agents: Object.values(hub.readAgents()), messages: hub.tailMessages(50), channels: [], paused: "held for testing" }),
-    onMessage: (m) => posted.push(m),
+    onMessage: (m) => {
+      if (m.to === "nosuch") throw new Error('no agent or channel "nosuch"');
+      posted.push(m);
+    },
     onSessionName: (name, sessionName) => {
       sessionNames.push({ name, sessionName });
     },
@@ -106,6 +109,20 @@ describe("GuiServer", () => {
     const res = await post("/message", JSON.stringify({ to: "group", text: "from the browser" }));
     expect(res.status).toBe(200);
     expect(posted).toContainEqual({ to: "group", text: "from the browser" });
+  });
+
+  it("tells the page why a message was refused", async () => {
+    const res = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request({ port, host: "127.0.0.1", path: "/message", method: "POST", headers: AUTH }, (r) => {
+        let body = "";
+        r.on("data", (c) => (body += c));
+        r.on("end", () => resolve({ status: r.statusCode ?? 0, body }));
+      });
+      req.on("error", reject);
+      req.end(JSON.stringify({ to: "nosuch", text: "hi" }));
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ ok: false, error: 'no agent or channel "nosuch"' });
   });
 
   it("sets a session name via POST /session-name", async () => {

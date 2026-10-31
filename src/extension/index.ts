@@ -18,10 +18,21 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
-import { Hub, shortId, MAX_MESSAGE_LEN, truncateMessage, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type FleetMessage, type ChannelConfig } from "../hub.ts";
+import { Hub, shortId, messageTooLong, addressLabel, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type FleetMessage, type ChannelConfig } from "../hub.ts";
 import { packageBinArgv } from "../rpc.ts";
 
 const POLL_MS = Number(process.env.PI_FLEET_POLL_MS ?? 3000);
+
+/** How long a model may stay silent mid-turn before the fleet is told (0 = never). */
+const STALL_MS = Number(process.env.PI_FLEET_STALL_MS ?? 5 * 60 * 1000);
+
+/**
+ * A run stops when it makes the same fleet call this many times. Only fleet calls
+ * count: nothing changes between identical messages, but running the same build
+ * or test again after an edit is ordinary work.
+ */
+const REPEAT_LIMIT = 3;
+const FLEET_TOOLS = new Set(["fleet_send", "fleet_mention", "route"]);
 
 function buildRoster(hub: Hub, name: string, lean: boolean): string {
   const agents = Object.values(hub.readAgents()).filter((a) => a.name !== name);
@@ -250,10 +261,10 @@ export function directedMessageText(channel: ChannelConfig, m: FleetMessage, sum
   return parts.join("\n");
 }
 
-export function formatInbox(messages: FleetMessage[], lookup: Map<string, FleetMessage>): string {
+export function formatInbox(messages: FleetMessage[], lookup: Map<string, FleetMessage>, channels: ChannelConfig[] = []): string {
   const lines = messages.map((m) => {
     const t = new Date(m.ts).toLocaleTimeString([], { hour12: false });
-    const target = m.to === "group" ? "#group" : `@${m.to}`;
+    const target = addressLabel(m.to, channels);
     const orig = m.replyTo ? lookup.get(m.replyTo) : undefined;
     const reply = m.replyTo ? ` (↪ replying to ${orig ? orig.from : shortId(m.replyTo)})` : "";
     return `(${shortId(m.id)}) [${t}] ${m.from} → ${target}${reply}: ${m.text}`;
@@ -339,7 +350,7 @@ export function createPoller(deps: PollerDeps): Poller {
           }
         }
         if (relevant.length > 0 || routeText) {
-          const inbox = relevant.length > 0 ? formatInbox(relevant, lookup) : "";
+          const inbox = relevant.length > 0 ? formatInbox(relevant, lookup, channels) : "";
           const combined = routeText && inbox ? `${routeText}\n\n${inbox}` : routeText || inbox;
           if (attached) {
             // supervisor is attached and will push this wake directly — don't
@@ -394,6 +405,9 @@ export default function (pi: ExtensionAPI) {
 
   let busy = false;
   let turns = 0;
+  const fleetCalls = new Map<string, number>(); // how often this run made each exact fleet call
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  let modelError: string | undefined;
   const poller = createPoller({
     hub,
     name,
@@ -441,21 +455,67 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_start", () => {
     turns = 0;
+    fleetCalls.clear();
     setBusy(true);
   });
-  pi.on("agent_settled", () => setBusy(false));
+  pi.on("agent_settled", () => {
+    clearTimeout(stallTimer);
+    if (modelError) {
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" stopped on a model error: ${modelError}` });
+      modelError = undefined;
+    }
+    setBusy(false);
+  });
+
+  // pi retries failed requests by itself, so only the last answer of a run counts.
+  pi.on("message_end", (event) => {
+    const m = event.message as { role: string; stopReason?: string; errorMessage?: string };
+    if (m.role === "assistant") modelError = m.stopReason === "error" ? (m.errorMessage ?? "unknown error") : undefined;
+  });
+
+  // A model that goes quiet looks exactly like a slow one, and the turn limit below only
+  // counts finished turns. Only the wait for the model is timed: tools may take as long as they like.
+  function watchModel(): void {
+    clearTimeout(stallTimer);
+    if (STALL_MS === 0) return;
+    stallTimer = setTimeout(() => {
+      hub.appendMessage({
+        from: "system",
+        to: "group",
+        kind: "system",
+        text: `agent "${name}" has had no answer from its model for ${Math.round(STALL_MS / 1000)}s. It is still waiting; Stop or Stop all ends the wait.`,
+      });
+    }, STALL_MS);
+    stallTimer.unref();
+  }
+  pi.on("turn_start", watchModel);
+  pi.on("message_update", watchModel);
+  pi.on("tool_execution_start", () => clearTimeout(stallTimer));
+
+  /** The run's fleet calls repeat with no end in sight. */
+  function repeatsItself(message: unknown): boolean {
+    const content = (message as { content?: { type: string; name?: string; arguments?: unknown }[] } | undefined)?.content ?? [];
+    let repeated = false;
+    for (const block of content) {
+      if (block.type !== "toolCall" || !FLEET_TOOLS.has(block.name ?? "")) continue;
+      const call = `${block.name} ${JSON.stringify(block.arguments)}`;
+      const count = (fleetCalls.get(call) ?? 0) + 1;
+      fleetCalls.set(call, count);
+      if (count === REPEAT_LIMIT) repeated = true;
+    }
+    return repeated;
+  }
 
   // Some models never end a run on their own. Counted here, not in the supervisor,
-  // so the limit also holds in detached mode, when nobody is watching.
-  pi.on("turn_end", (_event, ctx) => {
-    if (++turns !== maxTurns) return;
-    hub.appendMessage({
-      from: "system",
-      to: "group",
-      kind: "system",
-      text: `agent "${name}" was stopped after ${maxTurns} turns in one run (limit: --max-turns). Send it a message to continue.`,
-    });
-    ctx.abort();
+  // so the limits also hold in detached mode, when nobody is watching.
+  pi.on("turn_end", (event, ctx) => {
+    clearTimeout(stallTimer);
+    const stop = (reason: string) => {
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" was stopped: ${reason}. Send it a message to continue.` });
+      ctx.abort();
+    };
+    if (repeatsItself(event.message)) stop(`it made the same fleet call ${REPEAT_LIMIT} times in one run`);
+    else if (++turns === maxTurns) stop(`${maxTurns} turns in one run (limit: --max-turns)`);
   });
 
   pi.on("session_shutdown", () => {
@@ -488,6 +548,8 @@ export default function (pi: ExtensionAPI) {
     details: undefined,
   });
 
+  const refused = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined });
+
   // Weaker models keep inventing work after a handoff, so the way out is the last thing they read.
   const END_OF_HANDOFF = " If nothing else is assigned to you, end your turn now.";
 
@@ -507,30 +569,13 @@ export default function (pi: ExtensionAPI) {
       const to = params.to.trim();
       const mentions = mentionedAgents(params.text);
       if (to === name || (mentions.length > 0 && mentions.every((a) => a === name))) return selfAddressed();
-      if (to !== "group" && to !== DEFAULT_CHANNEL) {
-        const agents = hub.readAgents();
-        const isChannel = hub.readChannels().some((c) => c.name === to);
-        if (!agents[to] && !isChannel) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Unknown target "${to}". Agents: ${Object.keys(agents).join(", ") || "(none)"}. Channels: ${hub.readChannels().map((c) => c.name).join(", ") || "(none)"}.`,
-              },
-            ],
-            details: undefined,
-          };
-        }
-      }
+      if (!hub.targetKind(to)) return refused(hub.unknownTarget(to));
+      const tooLong = messageTooLong(params.text);
+      if (tooLong) return refused(`Not sent: ${tooLong}`);
       const msg = hub.appendMessage({ from: name, to, kind: "chat", text: params.text, replyTo: params.replyTo });
-      const { truncated } = truncateMessage(params.text);
-      const note = truncated
-        ? `\n(note: message was longer than ${MAX_MESSAGE_LEN} chars and was truncated — split long content into several messages)`
-        : "";
-      const targetLabel = to === "group" || to === DEFAULT_CHANNEL ? "#" + to : hub.readChannels().some((c) => c.name === to) ? "#" + to : "@" + to;
       return {
-        content: [{ type: "text" as const, text: `Sent to ${targetLabel}: ${msg.text}${note}${END_OF_HANDOFF}` }],
-        details: { messageId: msg.id, to, truncated },
+        content: [{ type: "text" as const, text: `Sent to ${addressLabel(to, hub.readChannels())}: ${msg.text}${END_OF_HANDOFF}` }],
+        details: { messageId: msg.id, to },
       };
     },
   });
@@ -553,7 +598,7 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: "No fleet messages." }], details: undefined };
       }
       return {
-        content: [{ type: "text" as const, text: formatInbox(msgs, buildLookup(hub)).replace(/^New fleet messages for you:\n/, "") }],
+        content: [{ type: "text" as const, text: formatInbox(msgs, buildLookup(hub), hub.readChannels()).replace(/^New fleet messages for you:\n/, "") }],
         details: { count: msgs.length },
       };
     },
@@ -605,6 +650,8 @@ export default function (pi: ExtensionAPI) {
         };
       }
       const mentions = targets.map((a) => `@${a}`).join(" ");
+      const tooLong = messageTooLong(`${mentions} ${params.text}`);
+      if (tooLong) return refused(`Not sent: ${tooLong}`);
       const msg = hub.appendMessage({
         from: name,
         to: "group",
@@ -760,8 +807,12 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /send <group|agent-name> <text>", "error");
         return;
       }
+      if (!hub.targetKind(m[1])) {
+        ctx.ui.notify(hub.unknownTarget(m[1]), "error");
+        return;
+      }
       hub.appendMessage({ from: name, to: m[1], kind: "chat", text: m[2].trim() });
-      ctx.ui.notify(`Sent to ${m[1] === "group" ? "#group" : "@" + m[1]}`, "info");
+      ctx.ui.notify(`Sent to ${addressLabel(m[1], hub.readChannels())}`, "info");
     },
   });
 

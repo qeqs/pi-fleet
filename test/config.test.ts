@@ -32,10 +32,26 @@ describe("fleet.json limits", () => {
     expect(loadFleetConfig(dir)).toMatchObject({ maxTurns: 25, maxHops: 0 });
   });
 
-  it("leaves unusable limits unset, so the defaults apply", () => {
-    write({ maxTurns: "lots", maxHops: -1, agents: [] });
-    const cfg = loadFleetConfig(dir);
-    expect(cfg?.maxTurns).toBeUndefined();
-    expect(cfg?.maxHops).toBeUndefined();
+  it("refuses an unusable limit, naming the field", () => {
+    write({ maxTurns: "lots", agents: [] });
+    expect(() => loadFleetConfig(dir)).toThrow(/"maxTurns" must be a whole number/);
+  });
+});
+
+describe("an invalid fleet.json", () => {
+  it("is an error naming the file, not an empty fleet", () => {
+    fs.writeFileSync(configPath(dir), "{ not json");
+    expect(() => loadFleetConfig(dir)).toThrow(configPath(dir));
+  });
+
+  it("needs a list of named agents", () => {
+    write({ agents: "planner" });
+    expect(() => loadFleetConfig(dir)).toThrow(/"agents" must be a list/);
+    write({ agents: [{ model: "x" }] });
+    expect(() => loadFleetConfig(dir)).toThrow(/every agent needs a "name"/);
+  });
+
+  it("no file at all is simply no config", () => {
+    expect(loadFleetConfig(dir)).toBeNull();
   });
 });

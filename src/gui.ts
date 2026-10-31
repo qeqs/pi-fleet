@@ -226,7 +226,7 @@ export class GuiServer {
           res.end(JSON.stringify({ ok: true }));
         } catch (e) {
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: String(e) }));
+          res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
         }
       });
       return;

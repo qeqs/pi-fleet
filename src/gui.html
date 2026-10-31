@@ -88,6 +88,7 @@
   .composer button{background:var(--accent);color:#04121f;border:none;border-radius:8px;padding:0 18px;font-weight:600;cursor:pointer;font-size:13px}
   .composer button:disabled{opacity:.5;cursor:default}
   .composer .hint{max-width:920px;margin:6px auto 0;color:var(--muted);font-size:11px}
+  .composer .hint.err{color:var(--red)}
   /* Settings modal */
   .overlay{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:50}
   .overlay.show{display:flex}
@@ -419,7 +420,7 @@
   function renderGroupMessage(m) {
     var whoCls = m.from === "user" ? "" : (m.from === "system" ? "system" : "");
     if (m.from === "system") return '<div class="msg system">' + esc(m.text) + "</div>";
-    var target = m.to === "group" ? "" : (" → @" + esc(m.to));
+    var target = m.to === "group" || getChannel(m.to) ? "" : (" → @" + esc(m.to));
     var reply = m.replyTo ? ' <span class="hmeta">↪ reply</span>' : "";
     return '<div class="msg ' + whoCls + '"><div class="who">' + esc(m.from) + target + '<span class="t">' + time(m.ts) + "</span>" + reply + '</div><div class="bubble">' + esc(m.text) + "</div></div>";
   }
@@ -587,12 +588,23 @@
     if (isChannelSel(state.selected)) {
       var to = (document.getElementById("toSel") || {}).value || "group";
       var target = to.indexOf("#") === 0 ? to.slice(1) : to; // "#dev" -> "dev"; "group"/"alice" unchanged
-      post("/message", { to: target, text: text });
+      post("/message", { to: target, text: text }).then(function (r) { if (!r.ok) sendFailed(text, r.error); });
     } else {
       // followUp queues the message if the agent is mid-turn (e.g. polling its inbox)
-      rpc(state.selected, "prompt", { message: text, streamingBehavior: "followUp" });
+      rpc(state.selected, "prompt", { message: text, streamingBehavior: "followUp" }).then(function (r) {
+        var refused = r.ok && r.result && r.result.success === false;
+        if (!r.ok || refused) sendFailed(text, refused ? r.result.error : r.error);
+      });
     }
     input.value = "";
+  }
+
+  // nothing the user typed is lost: the text goes back in the box, with the reason under it
+  function sendFailed(text, reason) {
+    var input = document.getElementById("msgInput");
+    if (input && !input.value) input.value = text;
+    var hint = composerEl.querySelector(".hint");
+    if (hint) { hint.textContent = "Not sent: " + (reason || "request failed"); hint.classList.add("err"); }
   }
 
   function selectChat(name) {

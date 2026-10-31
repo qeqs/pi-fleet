@@ -23,61 +23,66 @@
  * Lean mode (smaller prompt for weak/local models) is auto-detected from each
  * model's context window (<16k); override with `--lean` / `--no-lean`.
  */
-import { parseArgs, USAGE } from "./cli.ts";
+import { parseArgs, UsageError, USAGE } from "./cli.ts";
 import { cmdConfig, cmdInit, cmdList, cmdLog, cmdRename, cmdStop, cmdTemplates } from "./commands.ts";
+import { cmdDoctor } from "./doctor.ts";
 import { cmdUp } from "./supervisor.ts";
 
-function main() {
+function noExtraArgs(rest: string[]): void {
+  if (rest.length > 0) throw new UsageError(`unexpected argument "${rest[0]}"`);
+}
+
+async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   const baseCwd = process.cwd();
   switch (cmd) {
-    case "up":
-      void cmdUp(parseArgs(rest), baseCwd);
-      break;
+    case undefined:
+    case "help":
+    case "--help":
+    case "-h":
+      console.log(USAGE);
+      return;
+    case "up": {
+      const p = parseArgs(rest);
+      noExtraArgs(p.rest);
+      return cmdUp(p, baseCwd);
+    }
     case "serve": {
       // headless: spawn the fleet (from --agent/--template/fleet.json) and serve the web UI
       const p = parseArgs(rest);
+      noExtraArgs(p.rest);
       if (!p.gui) p.gui = true; // serve implies the web UI
-      void cmdUp(p, baseCwd, true);
-      break;
+      return cmdUp(p, baseCwd, true);
     }
-    case "list": {
-      const p = parseArgs(rest);
-      cmdList(p.dir, baseCwd);
-      break;
-    }
+    case "list":
+      return cmdList(parseArgs(rest).dir, baseCwd);
     case "stop": {
       const p = parseArgs(rest);
-      void cmdStop(p.rest[0], p.dir, baseCwd);
-      break;
+      return cmdStop(p.rest[0], p.dir, baseCwd);
     }
     case "log": {
       const p = parseArgs(rest);
-      cmdLog(p.rest[0], p.dir, baseCwd);
-      break;
+      return cmdLog(p.rest[0], p.dir, baseCwd);
     }
-    case "init": {
-      const p = parseArgs(rest);
-      cmdInit(p.dir, baseCwd);
-      break;
-    }
-    case "config": {
-      const p = parseArgs(rest);
-      cmdConfig(p.dir, baseCwd);
-      break;
-    }
-    case "templates": {
-      cmdTemplates();
-      break;
-    }
+    case "init":
+      return cmdInit(parseArgs(rest).dir, baseCwd);
+    case "config":
+      return cmdConfig(parseArgs(rest).dir, baseCwd);
+    case "templates":
+      return cmdTemplates();
     case "rename": {
       const p = parseArgs(rest);
-      void cmdRename(p.rest[0], p.rest[1], p.dir, baseCwd);
-      break;
+      return cmdRename(p.rest[0], p.rest[1], p.dir, baseCwd);
     }
+    case "doctor":
+      return cmdDoctor(parseArgs(rest).dir, baseCwd);
     default:
-      console.log(USAGE);
+      throw new UsageError(`unknown command "${cmd}"`);
   }
 }
 
-main();
+main().catch((err: Error) => {
+  console.error(`fleet: ${err.message}`);
+  if (err instanceof UsageError) console.error("Run `npm run fleet -- help` for usage.");
+  process.exit(err instanceof UsageError ? 2 : 1);
+});

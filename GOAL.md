@@ -21,6 +21,16 @@ Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
   in the roadmap. (Pull requests need `gh` or a token, which this environment does not have.)
 
 ## Progress log
+- 2026-11-01: Milestone 1 done (0.2.0). Every failure on the list now reaches the user. Bad
+  input ends in a sentence and a non-zero exit; a crash, a router loss, a stalled model and a
+  model error all post to `#group`. Demonstrated by one test per failure in `test/e2e.test.ts`
+  and `test/cli-run.test.ts`; each safeguard was disabled in a copy to confirm its test fails
+  (10 of 10). Desktop: a broken config is shown in 2s, was 90s of nothing.
+  Found by real-model runs: a model error left the agent silently idle, and a router could loop
+  on `route` and `fleet_send`. Both added to this milestone and fixed.
+- 2026-11-01: Milestone 0 done (0.1.1). CI green on Windows, Linux and macOS on the first run,
+  so Linux and macOS work as they are. `src/fleet.ts` split into cli, supervisor, spawn, wakes
+  and commands.
 - 2026-11-01: Goal set. `ROADMAP.md` written from the review below and checked against pi's
   docs: `get_state` returns `sessionFile` (resume), RPC dialogs exist (`extension_ui_request`),
   and the `tool_call` hook can block a call (approvals).

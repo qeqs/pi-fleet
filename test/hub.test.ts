@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { Hub, truncateMessage, MAX_MESSAGE_LEN, shortId } from "../src/hub.ts";
+import { Hub, messageTooLong, addressLabel, formatMessage, MAX_MESSAGE_LEN, shortId } from "../src/hub.ts";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -154,30 +154,121 @@ describe("registry", () => {
   });
 });
 
-describe("truncation", () => {
-  it("truncates long messages with a marker", () => {
-    const long = "x".repeat(MAX_MESSAGE_LEN + 500);
-    const { text, truncated } = truncateMessage(long);
-    expect(truncated).toBe(true);
-    expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE_LEN + 40);
-    expect(text).toContain("…(truncated)");
+describe("message length", () => {
+  it("explains why a message is too long", () => {
+    const reason = messageTooLong("x".repeat(MAX_MESSAGE_LEN + 1));
+    expect(reason).toContain(String(MAX_MESSAGE_LEN + 1));
+    expect(reason).toContain("split it");
   });
 
-  it("appendMessage truncates on write", () => {
+  it("accepts a message at the limit", () => {
+    expect(messageTooLong("x".repeat(MAX_MESSAGE_LEN))).toBeNull();
+  });
+
+  it("never cuts what it stores", () => {
     const long = "y".repeat(MAX_MESSAGE_LEN + 500);
-    const m = hub.appendMessage({ from: "a", to: "group", kind: "chat", text: long });
-    expect(m.text.length).toBeLessThan(long.length);
-    // on-disk record is valid JSON and truncated
-    const raw = fs.readFileSync(path.join(dir, "messages.jsonl"), "utf8").trim().split("\n").pop()!;
-    const parsed = JSON.parse(raw);
-    expect(parsed.text.length).toBeLessThan(long.length);
+    expect(hub.appendMessage({ from: "system", to: "bob", kind: "chat", text: long }).text).toBe(long);
+  });
+});
+
+describe("posting as the human", () => {
+  it("posts to the default channel, a named channel or an agent", () => {
+    hub.upsertChannel({ name: "dev", members: [] });
+    hub.updateAgent("alice", { name: "alice", pid: 1, cwd: ".", status: "idle" });
+    for (const to of ["group", "dev", "alice"]) expect(hub.postUserMessage(to, "hi").from).toBe("user");
   });
 
-  it("does not truncate short messages", () => {
-    const { text, truncated } = truncateMessage("short");
-    expect(truncated).toBe(false);
-    expect(text).toBe("short");
+  it("refuses an unknown address, listing what exists", () => {
+    hub.updateAgent("alice", { name: "alice", pid: 1, cwd: ".", status: "idle" });
+    expect(() => hub.postUserMessage("alcie", "hi")).toThrow(/no agent or channel "alcie"\. Agents: alice/);
+    expect(hub.tailMessages(5)).toHaveLength(0);
   });
+
+  it("refuses an over-long message instead of cutting it", () => {
+    expect(() => hub.postUserMessage("group", "z".repeat(MAX_MESSAGE_LEN + 1))).toThrow(/split it/);
+    expect(hub.tailMessages(5)).toHaveLength(0);
+  });
+});
+
+describe("addresses", () => {
+  const dev = [{ name: "dev", members: [] }];
+
+  it("labels channels with # and agents with @", () => {
+    expect(addressLabel("group")).toBe("#group");
+    expect(addressLabel("dev", dev)).toBe("#dev");
+    expect(addressLabel("alice", dev)).toBe("@alice");
+  });
+
+  it("shows a named channel as a channel in the terminal", () => {
+    const m = hub.appendMessage({ from: "user", to: "dev", kind: "chat", text: "hi" });
+    expect(formatMessage(m, undefined, dev)).toContain("user → #dev hi");
+  });
+});
+
+describe("router failover", () => {
+  const agent = (name: string, role?: string) => hub.updateAgent(name, { name, pid: 1, cwd: ".", status: "idle", role });
+
+  it("hands a channel to a running member, leaving healthy channels alone", () => {
+    agent("a");
+    agent("b");
+    hub.upsertChannel({ name: "group", members: ["a", "b"], supervisor: "a" });
+    hub.upsertChannel({ name: "dev", members: ["a", "b"], supervisor: "b" });
+    expect(hub.reassignSupervisors(["b"])).toEqual([{ channel: "group", supervisor: "b" }]);
+    expect(hub.getChannel("group")?.supervisor).toBe("b");
+  });
+
+  it("prefers an agent with the supervisor role", () => {
+    agent("a");
+    agent("b");
+    agent("c", "supervisor");
+    hub.upsertChannel({ name: "group", members: ["a", "b", "c"], supervisor: "a" });
+    hub.reassignSupervisors(["b", "c"]);
+    expect(hub.getChannel("group")?.supervisor).toBe("c");
+  });
+
+  it("treats the first member as the router when none is set", () => {
+    agent("a");
+    agent("b");
+    hub.upsertChannel({ name: "dev", members: ["a", "b"] });
+    expect(hub.reassignSupervisors(["b"])).toEqual([{ channel: "dev", supervisor: "b" }]);
+  });
+
+  it("keeps the router of a channel with nobody running", () => {
+    agent("a");
+    hub.upsertChannel({ name: "group", members: ["a"], supervisor: "a" });
+    expect(hub.reassignSupervisors([])).toEqual([]);
+    expect(hub.getChannel("group")?.supervisor).toBe("a");
+  });
+});
+
+describe("one supervisor per hub", () => {
+  it("sees nothing on a fresh hub, and does not count itself", () => {
+    expect(hub.otherSupervisor()).toBeNull();
+    hub.writeSupervisorHeartbeat();
+    expect(hub.otherSupervisor()).toBeNull();
+  });
+
+  it("names another live supervisor", async () => {
+    const other = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { stdio: "ignore" });
+    fs.writeFileSync(hub.supervisorFile, JSON.stringify({ ts: Date.now(), pid: other.pid }));
+    expect(hub.otherSupervisor()).toBe(other.pid);
+    other.kill();
+  });
+
+  it("ignores a heartbeat left by a dead process", () => {
+    fs.writeFileSync(hub.supervisorFile, JSON.stringify({ ts: Date.now(), pid: 999999999 }));
+    expect(hub.otherSupervisor()).toBeNull();
+  });
+});
+
+describe("channel writes across processes", () => {
+  it("loses no update when several processes write at once", async () => {
+    const tsx = path.join(__dirname, "..", "node_modules", "tsx", "dist", "cli.mjs");
+    const worker = path.join(__dirname, "hub-worker.ts");
+    const procs = [0, 1, 2].map((id) => spawn(process.execPath, [tsx, worker, dir, String(id)], { stdio: "ignore" }));
+    await Promise.all(procs.map((p) => new Promise((resolve) => p.on("exit", resolve))));
+    expect(hub.readChannels()).toHaveLength(45);
+  }, 30000);
 });
 
 describe("rotation", () => {

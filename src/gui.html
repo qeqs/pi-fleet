@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pi-fleet</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2129;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--amber:#d29922;--red:#f85149;--purple:#bc8cff;--user:#1f6feb;}
+  *{box-sizing:border-box}html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  header{display:flex;align-items:center;gap:12px;padding:9px 16px;background:var(--panel);border-bottom:1px solid var(--border);flex:0 0 auto}
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.02em}
+  header h1 .logo{color:var(--accent)}
+  header .dot{width:9px;height:9px;border-radius:50%;background:var(--red)}
+  header .dot.on{background:var(--green)}
+  header .meta{color:var(--muted);font-size:12px;margin-left:auto}
+  header button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
+  header button:hover{background:#262c36}
+  header button.danger:hover{border-color:var(--red);color:var(--red)}
+  header button:disabled{opacity:.5;cursor:default}
+  .pausedbar{flex:0 0 auto;padding:7px 16px;background:#d2992222;border-bottom:1px solid var(--amber);color:var(--amber);font-size:13px}
+  .layout{flex:1;display:grid;grid-template-columns:240px 1fr;min-height:0}
+  .sidebar{background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+  .side-title{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:12px 14px 6px}
+  .chatlist{flex:1;overflow-y:auto;padding:0 8px}
+  .chat{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;cursor:pointer;color:var(--text);font-size:13px}
+  .chat:hover{background:var(--panel2)}
+  .chat.active{background:#1f6feb22;color:var(--accent)}
+  .chat .cdot{width:8px;height:8px;border-radius:50%;background:#30363d;flex:0 0 auto}
+  .chat .cdot.busy{background:var(--amber)}.chat .cdot.idle{background:var(--green)}.chat .cdot.stopped{background:var(--muted)}
+  .chat .cname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chat .csess{margin-left:auto;color:var(--muted);font-size:10px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .side-actions{padding:10px;border-top:1px solid var(--border)}
+  .side-actions button{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:8px;font-size:13px;cursor:pointer}
+  .side-actions button:hover{background:#262c36}
+  .main{display:flex;flex-direction:column;min-height:0;min-width:0}
+  .chat-header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--border);flex:0 0 auto;flex-wrap:wrap}
+  .chat-header .title{font-weight:600;font-size:14px}
+  .badge{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600}
+  .badge.idle{background:#1f6feb33;color:var(--accent)}.badge.busy{background:#d2992233;color:var(--amber)}
+  .badge.stopped,.badge.starting{background:#30363d;color:var(--muted)}
+  .chat-header .hmeta{color:var(--muted);font-size:12px}
+  .chat-header .hbtns{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+  .chat-header .hbtns button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
+  .chat-header .hbtns button:hover{background:#262c36}
+  .chat-header .hbtns button.danger:hover{border-color:var(--red);color:var(--red)}
+  .chat-header .chsummary{flex-basis:100%;color:var(--muted);font-size:12px;padding:6px 0 0;border-top:1px solid var(--border);margin-top:4px;font-style:italic}
+  .conversation{flex:1;overflow-y:auto;padding:18px 20px}
+  .empty{color:var(--muted);font-style:italic;text-align:center;padding:40px 12px}
+  .msg{margin-bottom:14px;max-width:920px}
+  .msg.user{display:flex;justify-content:flex-end}
+  .msg.user .bubble{background:var(--user);color:#fff;padding:8px 12px;border-radius:12px 12px 3px 12px;max-width:75%;white-space:pre-wrap;word-wrap:break-word}
+  .msg.system{color:var(--muted);font-size:12px;text-align:center;font-style:italic}
+  .msg .who{font-weight:600;font-size:12px;color:var(--purple);margin-bottom:3px}
+  .msg .who .t{color:var(--muted);font-weight:400;margin-left:8px}
+  .bubble{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 14px;word-wrap:break-word}
+  .bubble h2,.bubble h3,.bubble h4{margin:10px 0 6px}
+  .bubble p{margin:6px 0}
+  .bubble pre{background:#0a0e14;border:1px solid var(--border);border-radius:6px;padding:10px;overflow-x:auto;font-size:12px}
+  .bubble code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12px}
+  .bubble :not(pre)>code{background:#262c36;padding:1px 5px;border-radius:4px}
+  .bubble ul{margin:6px 0;padding-left:20px}
+  .bubble a{color:var(--accent)}
+  .thinking{margin:6px 0;border:1px dashed #3a3f4a;border-radius:8px;background:#12161d}
+  .thinking .th{cursor:pointer;color:var(--muted);font-size:12px;padding:6px 10px;user-select:none}
+  .thinking .th:hover{color:var(--text)}
+  .thinking .tb{display:none;padding:0 12px 10px;color:var(--muted);font-size:12px;white-space:pre-wrap;font-style:italic}
+  .thinking.open .tb{display:block}
+  .tool{margin:8px 0;border:1px solid var(--border);border-radius:8px;background:var(--panel2);overflow:hidden}
+  .tool .thead{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;user-select:none}
+  .tool .thead:hover{background:#232a34}
+  .tool .tname{font-weight:600;font-size:12px;font-family:ui-monospace,monospace}
+  .tool .tstatus{font-size:11px;color:var(--muted)}
+  .tool .tstatus.ok{color:var(--green)}.tool .tstatus.err{color:var(--red)}.tool .tstatus.run{color:var(--amber)}
+  .tool .chev{margin-left:auto;color:var(--muted);font-size:11px}
+  .tool .tbody{display:none;border-top:1px solid var(--border)}
+  .tool.open .tbody{display:block}
+  .tool .tsec{padding:8px 12px;font-size:12px}
+  .tool .tsec .lbl{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+  .tool .tsec pre{margin:0;background:#0a0e14;border-radius:6px;padding:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto}
+  .tool .tsec.err pre{color:#ffb3ad}
+  .spinner{display:inline-block;width:12px;height:12px;border:2px solid #30363d;border-top-color:var(--amber);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .composer{flex:0 0 auto;border-top:1px solid var(--border);background:var(--panel);padding:12px 16px}
+  .composer .row{display:flex;gap:8px;max-width:920px;margin:0 auto}
+  .composer textarea{flex:1;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;font-family:inherit;resize:none;max-height:160px;min-height:42px}
+  .composer textarea:focus{outline:none;border-color:var(--accent)}
+  .composer button{background:var(--accent);color:#04121f;border:none;border-radius:8px;padding:0 18px;font-weight:600;cursor:pointer;font-size:13px}
+  .composer button:disabled{opacity:.5;cursor:default}
+  .composer .hint{max-width:920px;margin:6px auto 0;color:var(--muted);font-size:11px}
+  /* Settings modal */
+  .overlay{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:50}
+  .overlay.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:12px;width:min(720px,92vw);max-height:86vh;display:flex;flex-direction:column}
+  .modal .mhead{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
+  .modal .mhead h2{margin:0;font-size:15px}
+  .modal .mhead .x{margin-left:auto;background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer}
+  .tabs{display:flex;gap:4px;padding:10px 18px 0;border-bottom:1px solid var(--border)}
+  .tabs button{background:none;border:none;color:var(--muted);padding:8px 12px;font-size:13px;cursor:pointer;border-bottom:2px solid transparent}
+  .tabs button.active{color:var(--text);border-bottom-color:var(--accent)}
+  .mbody{padding:16px 18px;overflow-y:auto;font-size:13px}
+  .mbody h3{font-size:13px;margin:14px 0 6px;color:var(--text)}
+  .mbody h3:first-child{margin-top:0}
+  .field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+  .field label{color:var(--muted);font-size:12px}
+  .field input,.field select{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:13px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .mrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:7px;margin-bottom:6px}
+  .mrow .nm{font-weight:600}
+  .mrow .desc{color:var(--muted);font-size:12px;flex:1}
+  .mrow button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
+  .mrow button:hover{background:#262c36}
+  .mrow button.del:hover{border-color:var(--red);color:var(--red)}
+  .chk{display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer}
+  .chk input{width:16px;height:16px}
+  .chk .scope{color:var(--muted);font-size:11px;margin-left:auto}
+  .stat{color:var(--muted);font-size:12px}
+  .stat b{color:var(--text)}
+  .modal.dialog{width:min(440px,92vw)}
+  .dialog-error{color:var(--red);font-size:12px;white-space:pre-wrap;margin-bottom:10px}
+  .dialog-error:empty{display:none}
+  .dialog-actions{display:flex;justify-content:flex-end}
+  .dialog-actions button{background:var(--accent);color:#04121f;border:none;border-radius:6px;padding:8px 14px;font-weight:600;cursor:pointer}
+  .dialog-actions button:disabled{opacity:.5;cursor:default}
+</style>
+</head>
+<body>
+<header>
+  <div class="dot" id="conn"></div>
+  <h1><span class="logo">◆</span> pi-fleet</h1>
+  <span class="meta" id="meta">connecting…</span>
+  <button id="stopAllBtn" class="danger" title="Abort every run and hold agent messages until you write again">⏹ Stop all</button>
+  <button id="settingsBtn">⚙ Settings</button>
+</header>
+<div class="pausedbar" id="pausedBar" hidden></div>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="side-title">Chats</div>
+    <div class="chatlist" id="chatList"></div>
+    <div class="side-actions">
+      <button id="newChatBtn">＋ New chat</button>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="chat-header" id="chatHeader"></div>
+    <div class="conversation" id="conversation"></div>
+    <div class="composer" id="composer"></div>
+  </main>
+</div>
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <div class="mhead"><h2>Settings</h2><button class="x" id="closeSettings">×</button></div>
+    <div class="tabs" id="tabs">
+      <button data-tab="fleet" class="active">Fleet</button>
+      <button data-tab="channels">Channels</button>
+      <button data-tab="plugins">Plugins</button>
+      <button data-tab="mcp">MCP</button>
+      <button data-tab="usage">Usage</button>
+    </div>
+    <div class="mbody" id="mbody"></div>
+  </div>
+</div>
+<div class="overlay" id="dialog">
+  <form class="modal dialog" id="dialogForm">
+    <div class="mhead"><h2 id="dialogTitle"></h2><button type="button" class="x" id="dialogClose">×</button></div>
+    <div class="mbody">
+      <div id="dialogFields"></div>
+      <div class="dialog-error" id="dialogError"></div>
+      <div class="dialog-actions"><button type="submit" id="dialogSubmit"></button></div>
+    </div>
+  </form>
+</div>
+<script>
+(function () {
+  "use strict";
+  // the startup link carried the access token; the cookie has it now, so drop it from the address bar
+  if (location.search) history.replaceState(null, "", location.pathname);
+  // ---------- utilities ----------
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function time(ts) { var d = ts ? new Date(ts) : new Date(); return d.toTimeString().slice(0, 8); }
+  function extractText(content) {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) return content.map(function (b) { return (b && b.text) || ""; }).join("");
+    return "";
+  }
+  // minimal markdown -> html (code blocks, inline code, bold, italic, headings, links, lists)
+  function md(src) {
+    if (!src) return "";
+    var s = esc(src);
+    s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, function (_, lang, code) { return "<pre><code>" + code + "</code></pre>"; });
+    s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    s = s.replace(/^### (.*)$/gm, "<h4>$1</h4>");
+    s = s.replace(/^## (.*)$/gm, "<h3>$1</h3>");
+    s = s.replace(/^# (.*)$/gm, "<h2>$1</h2>");
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    s = s.replace(/(^|\n)- (.*)/g, "$1<li>$2</li>");
+    s = s.replace(/\n/g, "<br>");
+    return s;
+  }
+  function jsonStr(o) { try { return JSON.stringify(o, null, 2); } catch (e) { return String(o); } }
+
+  // ---------- state ----------
+  var state = {
+    agents: {},            // name -> { info, status, model, sessionName, stats }
+    channels: [],          // [{name, members, supervisor, summary}]
+    group: [],             // bus messages (all channels + DMs)
+    conv: {},              // name -> { items: [], live: {text,thinking,tools,active} }
+    selected: "group",     // "group" | "#<channel>" | an agent name
+    paused: null,          // why the fleet is paused, if it is
+    mcp: { mcpServers: {} },
+    extensions: { available: [], selected: {} },
+    settingsTab: "fleet"
+  };
+
+  // channel selection helpers: "group" is the default channel, "#name" a named one
+  function isChannelSel(sel) { return sel === "group" || (typeof sel === "string" && sel.indexOf("#") === 0); }
+  function channelNameOf(sel) { return sel === "group" ? "group" : String(sel).slice(1); }
+  function getChannel(name) { for (var i = 0; i < state.channels.length; i++) if (state.channels[i].name === name) return state.channels[i]; return null; }
+  function channelMessages(name) { return state.group.filter(function (m) { return m.to === name; }); }
+
+  // ---------- conversation model ----------
+  function getConv(name) { if (!state.conv[name]) state.conv[name] = { items: [], live: null }; return state.conv[name]; }
+
+  function assistantItemFromMessage(m) {
+    var blocks = [];
+    var content = Array.isArray(m.content) ? m.content : [];
+    for (var i = 0; i < content.length; i++) {
+      var b = content[i];
+      if (b.type === "text") blocks.push({ type: "text", text: b.text || "" });
+      else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
+      else if (b.type === "toolCall") blocks.push({ type: "tool", id: b.id, name: b.name, args: b.arguments, result: undefined, duration: undefined, isError: false, running: false });
+    }
+    return { type: "assistant", blocks: blocks, ts: m.timestamp, usage: m.usage };
+  }
+
+  function seedFromMessages(name, messages) {
+    var conv = getConv(name);
+    var items = [];
+    var toolById = {};
+    (messages || []).forEach(function (m) {
+      if (m.role === "user") {
+        items.push({ type: "user", text: extractText(m.content), ts: m.timestamp });
+      } else if (m.role === "assistant") {
+        var it = assistantItemFromMessage(m);
+        it.blocks.forEach(function (b) { if (b.type === "tool" && b.id) toolById[b.id] = b; });
+        items.push(it);
+      } else if (m.role === "toolResult") {
+        var t = toolById[m.toolCallId];
+        if (t) { t.result = extractText(m.content); t.isError = !!m.isError; }
+        else items.push({ type: "toolresult", id: m.toolCallId, name: m.toolName, text: extractText(m.content), isError: !!m.isError });
+      }
+    });
+    conv.items = items;
+    conv.live = null;
+  }
+
+  // apply a live RPC event to an agent's conversation model
+  function applyEvent(name, ev) {
+    var conv = getConv(name);
+    var t = ev.type;
+    if (t === "agent_start") { conv.live = { text: "", thinking: "", tools: [], active: true }; }
+    else if (t === "message_update") {
+      var ame = ev.assistantMessageEvent || {};
+      if (!conv.live) conv.live = { text: "", thinking: "", tools: [], active: true };
+      if (ame.type === "text_delta" && ame.delta) conv.live.text += ame.delta;
+      else if (ame.type === "thinking_delta" && ame.delta) conv.live.thinking += ame.delta;
+      else if (ame.type === "toolcall_end" && ame.toolCall) conv.live.tools.push({ id: ame.toolCall.id, name: ame.toolCall.name, args: ame.toolCall.arguments, running: false });
+    }
+    else if (t === "message_end" && ev.message && ev.message.role === "assistant") {
+      var it = assistantItemFromMessage(ev.message);
+      (conv.live ? conv.live.tools : []).forEach(function (lt) {
+        var match = it.blocks.filter(function (b) { return b.type === "tool" && b.id === lt.id; })[0];
+        if (match) match.running = lt.running;
+      });
+      conv.items.push(it);
+      conv.live = null;
+    }
+    else if (t === "tool_execution_start") {
+      var tool = findTool(name, ev.toolCallId);
+      if (tool) { tool.running = true; tool.args = ev.args || tool.args; }
+    }
+    else if (t === "tool_execution_end") {
+      var tool2 = findTool(name, ev.toolCallId);
+      if (tool2) { tool2.running = false; tool2.isError = !!ev.isError; tool2.duration = ev.durationMs; tool2.result = extractText(ev.result && ev.result.content); }
+    }
+    else if (t === "agent_settled") { conv.live = null; }
+  }
+
+  function findTool(name, id) {
+    var conv = state.conv[name]; if (!conv) return null;
+    for (var i = conv.items.length - 1; i >= 0; i--) {
+      var it = conv.items[i];
+      if (it.type === "assistant") for (var j = 0; j < it.blocks.length; j++) if (it.blocks[j].type === "tool" && it.blocks[j].id === id) return it.blocks[j];
+    }
+    if (conv.live) for (var k = 0; k < conv.live.tools.length; k++) if (conv.live.tools[k].id === id) return conv.live.tools[k];
+    return null;
+  }
+  // ---------- rendering ----------
+  var chatListEl = document.getElementById("chatList");
+  var headerEl = document.getElementById("chatHeader");
+  var convEl = document.getElementById("conversation");
+  var composerEl = document.getElementById("composer");
+  var metaEl = document.getElementById("meta");
+  var connEl = document.getElementById("conn");
+  var overlayEl = document.getElementById("overlay");
+  var mbodyEl = document.getElementById("mbody");
+  var pausedBarEl = document.getElementById("pausedBar");
+
+  function agentNames() { return Object.keys(state.agents).sort(); }
+
+  function renderPaused() {
+    pausedBarEl.hidden = !state.paused;
+    pausedBarEl.textContent = state.paused ? "⏸ Fleet paused: " + state.paused + ". Your next message resumes it." : "";
+  }
+
+  function renderSidebar() {
+    var html = '';
+    html += '<div class="side-title">Channels</div>';
+    var chans = state.channels.slice();
+    // make sure the default group channel always shows
+    if (!chans.some(function (c) { return c.name === "group"; })) chans.unshift({ name: "group", members: agentNames(), supervisor: null });
+    chans.forEach(function (c) {
+      var sel = c.name === "group" ? "group" : "#" + c.name;
+      var busy = (c.members || []).some(function (m) { return state.agents[m] && state.agents[m].status === "busy"; });
+      var dot = busy ? "busy" : "idle";
+      html += '<div class="chat' + (state.selected === sel ? " active" : "") + '" data-chat="' + esc(sel) + '"><span class="cdot ' + dot + '"></span><span class="cname"># ' + esc(c.name) + '</span><span class="csess">' + (c.members ? c.members.length : 0) + '</span></div>';
+    });
+    html += '<div class="side-title">Direct</div>';
+    agentNames().forEach(function (n) {
+      var a = state.agents[n];
+      var st = a.status || "stopped";
+      var sess = a.sessionName ? esc(a.sessionName) : "";
+      html += '<div class="chat' + (state.selected === n ? " active" : "") + '" data-chat="' + esc(n) + '"><span class="cdot ' + esc(st) + '"></span><span class="cname">@ ' + esc(n) + '</span>' + (sess ? '<span class="csess">' + sess + '</span>' : "") + "</div>";
+    });
+    chatListEl.innerHTML = html;
+  }
+
+  function renderHeader() {
+    if (isChannelSel(state.selected)) {
+      var cname = channelNameOf(state.selected);
+      var ch = getChannel(cname) || { name: cname, members: agentNames(), supervisor: null };
+      var sup = ch.supervisor || (ch.members && ch.members[0]) || "";
+      var members = (ch.members || []).map(function (m) { return "@" + esc(m); }).join(", ") || "(none)";
+      var summary = ch.summary ? '<div class="chsummary">Summary: ' + esc(ch.summary) + '</div>' : "";
+      headerEl.innerHTML =
+        '<span class="title"># ' + esc(cname) + '</span>' +
+        '<span class="hmeta">supervisor @' + esc(sup) + ' · members: ' + members + '</span>' +
+        '<span class="hbtns"><button data-act="manage-channel">Manage</button><button data-act="clear-channel">Clear</button></span>' +
+        summary;
+      return;
+    }
+    var a = state.agents[state.selected];
+    if (!a) { headerEl.innerHTML = ""; return; }
+    var st = a.status || "stopped";
+    var model = a.model ? esc(a.model) : "";
+    var sess = a.sessionName ? " · " + esc(a.sessionName) : "";
+    var stats = a.stats ? " · " + fmtCost(a.stats) : "";
+    headerEl.innerHTML =
+      '<span class="title">@ ' + esc(state.selected) + '</span>' +
+      '<span class="badge ' + esc(st) + '">' + esc(st) + '</span>' +
+      '<span class="hmeta">' + model + sess + stats + '</span>' +
+      '<span class="hbtns">' +
+      '<button data-act="new-session" title="Start a fresh session">New session</button>' +
+      '<button data-act="rename">Name</button>' +
+      '<button data-act="compact" title="Compact context">Compact</button>' +
+      '<button data-act="abort" class="danger" title="Stop the current run">Stop</button>' +
+      "</span>";
+  }
+
+  function fmtCost(stats) {
+    try {
+      var c = stats.cost != null ? "$" + Number(stats.cost).toFixed(4) : "";
+      var tok = stats.tokens && stats.tokens.total ? " · " + stats.tokens.total + " tok" : "";
+      return c + tok;
+    } catch (e) { return ""; }
+  }
+
+  function renderToolBlock(tool) {
+    var status = tool.running ? '<span class="tstatus run"><span class="spinner"></span> running</span>'
+      : tool.isError ? '<span class="tstatus err">✗ error' + (tool.duration != null ? " · " + tool.duration + "ms" : "") + "</span>"
+      : '<span class="tstatus ok">✓' + (tool.duration != null ? " " + tool.duration + "ms" : "") + "</span>";
+    var args = tool.args != null ? '<div class="tsec"><div class="lbl">arguments</div><pre>' + esc(jsonStr(tool.args)) + "</pre></div>" : "";
+    var res = (tool.result != null && tool.result !== "") ? '<div class="tsec' + (tool.isError ? " err" : "") + '"><div class="lbl">' + (tool.isError ? "error" : "result") + '</div><pre>' + esc(tool.result) + "</pre></div>" : "";
+    return '<div class="tool"><div class="thead"><span class="tname">⚙ ' + esc(tool.name) + "</span>" + status + '<span class="chev">▸</span></div>' +
+      "<div class=\"tbody\">" + args + res + "</div></div>";
+  }
+
+  function renderAssistantItem(item) {
+    var html = '<div class="msg"><div class="who">assistant<span class="t">' + time(item.ts) + "</span></div><div class=\"bubble\">";
+    (item.blocks || []).forEach(function (b) {
+      if (b.type === "text" && b.text) html += "<div>" + md(b.text) + "</div>";
+      else if (b.type === "thinking" && b.text) html += '<div class="thinking"><div class="th">💭 thinking ▸</div><div class="tb">' + esc(b.text) + "</div></div>";
+      else if (b.type === "tool") html += renderToolBlock(b);
+    });
+    html += "</div></div>";
+    return html;
+  }
+
+  function renderLive(live) {
+    if (!live) return "";
+    var html = '<div class="msg"><div class="who">assistant<span class="t">streaming…</span></div><div class="bubble">';
+    if (live.thinking) html += '<div class="thinking open"><div class="th">💭 thinking ▾</div><div class="tb">' + esc(live.thinking) + "</div></div>";
+    if (live.text) html += "<div>" + md(live.text) + "</div>";
+    (live.tools || []).forEach(function (t) { html += renderToolBlock(t); });
+    if (!live.text && !live.thinking && !(live.tools && live.tools.length)) html += '<span class="spinner"></span> <span class="hmeta">thinking…</span>';
+    html += "</div></div>";
+    return html;
+  }
+
+  function renderConvItem(item) {
+    if (item.type === "user") return '<div class="msg user"><div class="bubble">' + esc(item.text) + "</div></div>";
+    if (item.type === "assistant") return renderAssistantItem(item);
+    if (item.type === "toolresult") return '<div class="msg"><div class="who">tool result<span class="t">' + esc(item.name || "") + "</span></div><div class=\"bubble\"><pre style=\"margin:0\">" + esc(item.text) + "</pre></div></div>";
+    return "";
+  }
+
+  function renderGroupMessage(m) {
+    var whoCls = m.from === "user" ? "" : (m.from === "system" ? "system" : "");
+    if (m.from === "system") return '<div class="msg system">' + esc(m.text) + "</div>";
+    var target = m.to === "group" ? "" : (" → @" + esc(m.to));
+    var reply = m.replyTo ? ' <span class="hmeta">↪ reply</span>' : "";
+    return '<div class="msg ' + whoCls + '"><div class="who">' + esc(m.from) + target + '<span class="t">' + time(m.ts) + "</span>" + reply + '</div><div class="bubble">' + esc(m.text) + "</div></div>";
+  }
+
+  function renderConversation() {
+    var wasAtBottom = convEl.scrollHeight - convEl.scrollTop - convEl.clientHeight < 60;
+    var html = "";
+    if (isChannelSel(state.selected)) {
+      var msgs = channelMessages(channelNameOf(state.selected));
+      if (!msgs.length) html = '<div class="empty">No messages in this channel yet — say hello.</div>';
+      else msgs.forEach(function (m) { html += renderGroupMessage(m); });
+    } else {
+      var conv = state.conv[state.selected];
+      if (!conv || (!conv.items.length && !conv.live)) html = '<div class="empty">No messages yet — start the conversation.</div>';
+      else {
+        conv.items.forEach(function (it) { html += renderConvItem(it); });
+        html += renderLive(conv.live);
+      }
+    }
+    convEl.innerHTML = html;
+    if (wasAtBottom) convEl.scrollTop = convEl.scrollHeight;
+    // wire up collapsibles
+    convEl.querySelectorAll(".tool .thead").forEach(function (h) { h.onclick = function () { h.parentElement.classList.toggle("open"); h.querySelector(".chev").textContent = h.parentElement.classList.contains("open") ? "▾" : "▸"; }; });
+    convEl.querySelectorAll(".thinking .th").forEach(function (h) { h.onclick = function () { h.parentElement.classList.toggle("open"); h.textContent = h.textContent.replace(/▸|▾/, h.parentElement.classList.contains("open") ? "▾" : "▸"); }; });
+  }
+
+  function renderComposer() {
+    if (isChannelSel(state.selected)) {
+      var opts = "";
+      state.channels.slice().forEach(function (c) { if (c.name !== "group") opts += '<option value="#' + esc(c.name) + '># ' + esc(c.name) + "</option>"; });
+      opts += '<option value="group"># group</option>';
+      agentNames().forEach(function (n) { opts += '<option value="' + esc(n) + '">@ ' + esc(n) + "</option>"; });
+      composerEl.innerHTML = '<div class="row"><select id="toSel" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:0 8px;font-size:13px">' + opts + '</select>' +
+        '<textarea id="msgInput" placeholder="Message the group (or an agent) — Enter to send, Shift+Enter for newline"></textarea>' +
+        '<button id="sendBtn">Send</button></div><div class="hint">Channel messages are routed by the supervisor; pick an agent to DM directly.</div>';
+      var _sel = document.getElementById("toSel"); if (_sel) _sel.value = state.selected;
+    } else {
+      composerEl.innerHTML = '<div class="row"><textarea id="msgInput" placeholder="Message @' + esc(state.selected) + ' directly — Enter to send, Shift+Enter for newline"></textarea>' +
+        '<button id="sendBtn">Send</button></div><div class="hint">Direct prompt to this agent (its pi session).</div>';
+    }
+    var input = document.getElementById("msgInput");
+    var sendBtn = document.getElementById("sendBtn");
+    sendBtn.onclick = send;
+    input.addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+    input.focus();
+  }
+
+  function renderAll() { renderSidebar(); renderHeader(); renderConversation(); renderComposer(); }
+  // ---------- settings ----------
+  function renderSettings() {
+    var tab = state.settingsTab;
+    if (tab === "fleet") {
+      var h = "<h3>Fleet</h3>";
+      var names = agentNames();
+      if (!names.length) h += '<div class="stat">No agents running.</div>';
+      names.forEach(function (n) {
+        var a = state.agents[n];
+        h += '<div class="mrow"><span class="nm">@ ' + esc(n) + '</span><span class="desc">' + esc(a.model || "") + (a.role ? " · " + esc(a.role) : "") + '</span><span class="stat">' + esc(a.status || "") + "</span></div>";
+      });
+      h += '<div class="stat" style="margin-top:10px">Agents are defined in <code>fleet.json</code> or via <code>--agent</code> / templates. Use “New chat” to add one at runtime.</div>';
+      mbodyEl.innerHTML = h;
+    } else if (tab === "channels") {
+      var h = "<h3>Channels</h3>";
+      h += '<div class="stat" style="margin-bottom:10px">A channel is a named group chat with a supervisor that routes each message to the relevant members (keeping token spend low). The default <code>#group</code> is always present and is managed by the fleet.</div>';
+      state.channels.slice().forEach(function (c) {
+        if (c.name === "group") return;
+        var sup = c.supervisor || (c.members && c.members[0]) || "";
+        h += '<div class="mrow"><span class="nm"># ' + esc(c.name) + '</span><span class="desc">supervisor @' + esc(sup) + " · " + (c.members || []).map(function (m) { return esc(m); }).join(", ") + '</span>';
+        h += '<button data-chedit="' + esc(c.name) + '">Edit</button><button class="del" data-chdel="' + esc(c.name) + '">Remove</button></div>';
+        if (c.summary) h += '<div class="stat" style="margin:0 0 8px 12px">Summary: ' + esc(c.summary) + '</div>';
+      });
+      h += '<h3 style="margin-top:16px">Create channel</h3>';
+      h += '<div class="field"><label>Name</label><input id="chName" placeholder="e.g. dev"></div>';
+      h += '<div class="field"><label>Members (pick agents)</label>';
+      agentNames().forEach(function (n) { h += '<label class="chk"><input type="checkbox" class="chMember" value="' + esc(n) + '"><span>@ ' + esc(n) + '</span></label>'; });
+      h += '</div>';
+      h += '<div class="field"><label>Supervisor (optional — defaults to the first member)</label><input id="chSup" placeholder="leave empty for first member"></div>';
+      h += '<button id="chAdd" style="margin-top:6px">Add channel</button>';
+      mbodyEl.innerHTML = h;
+      var addBtn = document.getElementById("chAdd");
+      if (addBtn) addBtn.onclick = function () {
+        var name = (document.getElementById("chName") || {}).value.trim();
+        if (!name) { alert("Channel name required"); return; }
+        var members = [];
+        mbodyEl.querySelectorAll(".chMember:checked").forEach(function (cb) { members.push(cb.value); });
+        if (!members.length) { alert("Pick at least one member"); return; }
+        var sup = (document.getElementById("chSup") || {}).value.trim() || null;
+        post("/channels", { name: name, members: members, supervisor: sup }).then(function (r) {
+          if (r.ok) { state.channels = state.channels.filter(function (c) { return c.name !== name; }); state.channels.push({ name: name, members: members, supervisor: sup }); renderSettings(); renderSidebar(); }
+          else alert("Could not create channel: " + (r.error || ""));
+        });
+      };
+      mbodyEl.querySelectorAll("[data-chdel]").forEach(function (b) { b.onclick = function () { var nm = b.getAttribute("data-chdel"); post("/channels/remove", { name: nm }).then(function () { state.channels = state.channels.filter(function (c) { return c.name !== nm; }); renderSettings(); renderSidebar(); }); }; });
+      mbodyEl.querySelectorAll("[data-chedit]").forEach(function (b) { b.onclick = function () { var nm = b.getAttribute("data-chedit"); var c = getChannel(nm); if (!c) return; var ni = document.getElementById("chName"); if (ni) ni.value = c.name; mbodyEl.querySelectorAll(".chMember").forEach(function (cb) { cb.checked = (c.members || []).indexOf(cb.value) >= 0; }); var si = document.getElementById("chSup"); if (si) si.value = c.supervisor || ""; }; });
+    } else if (tab === "plugins") {
+      var h2 = "<h3>Plugins (pi extensions)</h3><div class='stat' style='margin-bottom:10px'>Toggles apply on the agent's next spawn/restart. Discovered from <code>~/.pi/agent/extensions</code> and each agent's <code>.pi/extensions</code>.</div>";
+      if (!state.extensions.available.length) h2 += '<div class="stat">No extensions found.</div>';
+      agentNames().forEach(function (n) {
+        var sel = state.extensions.selected[n] || [];
+        h2 += "<h3>@ " + esc(n) + "</h3>";
+        state.extensions.available.forEach(function (e) {
+          var checked = sel.indexOf(e.path) >= 0 ? " checked" : "";
+          h2 += '<label class="chk"><input type="checkbox" data-agent="' + esc(n) + '" data-path="' + esc(e.path) + '"' + checked + "><span>" + esc(e.name) + '</span><span class="scope">' + esc(e.scope) + "</span></label>";
+        });
+      });
+      mbodyEl.innerHTML = h2;
+      mbodyEl.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
+        cb.onchange = function () {
+          var agent = cb.getAttribute("data-agent");
+          var cur = (state.extensions.selected[agent] || []).slice();
+          if (cb.checked) cur.push(cb.getAttribute("data-path")); else cur = cur.filter(function (p) { return p !== cb.getAttribute("data-path"); });
+          state.extensions.selected[agent] = cur;
+          post("/extensions", { agent: agent, extensions: cur });
+        };
+      });
+    } else if (tab === "mcp") {
+      var h3 = "<h3>MCP servers</h3><div class='stat' style='margin-bottom:10px'>Edits <code>~/.pi/agent/mcp.json</code> (user-level, applies to all agents). Run <code>/reload</code> in a session or restart agents to pick up changes.</div>";
+      var servers = state.mcp.mcpServers || {};
+      var keys = Object.keys(servers);
+      if (!keys.length) h3 += '<div class="stat">No MCP servers configured.</div>';
+      keys.forEach(function (k) {
+        var s = servers[k];
+        var desc = s.command ? (esc(s.command) + " " + esc((s.args || []).join(" "))) : (s.url ? esc(s.url) : "");
+        h3 += '<div class="mrow"><span class="nm">' + esc(k) + '</span><span class="desc">' + desc + '</span><button class="del" data-mcpdel="' + esc(k) + '">Remove</button></div>';
+      });
+      h3 += '<h3>Add server</h3>' +
+        '<div class="field"><label>Name</label><input id="mcpName" placeholder="filesystem"></div>' +
+        '<div class="row2">' +
+        '<div class="field"><label>Command (stdio)</label><input id="mcpCmd" placeholder="npx"></div>' +
+        '<div class="field"><label>Args (space-separated)</label><input id="mcpArgs" placeholder="-y @modelcontextprotocol/server-filesystem ."></div>' +
+        "</div>" +
+        '<div class="field"><label>Or URL (http / streamable-http)</label><input id="mcpUrl" placeholder="https://example.com/mcp"></div>' +
+        '<div class="field"><label>Env (KEY=VALUE, space-separated, optional)</label><input id="mcpEnv" placeholder="API_KEY=..."></div>' +
+        '<button id="mcpAdd" style="background:var(--accent);color:#04121f;border:none;border-radius:6px;padding:8px 14px;font-weight:600;cursor:pointer">Add server</button>';
+      mbodyEl.innerHTML = h3;
+      mbodyEl.querySelectorAll("[data-mcpdel]").forEach(function (b) { b.onclick = function () { mcpRemove(b.getAttribute("data-mcpdel")); }; });
+      var addBtn = document.getElementById("mcpAdd");
+      if (addBtn) addBtn.onclick = mcpAdd;
+    } else if (tab === "usage") {
+      var h4 = "<h3>Usage & cost</h3>";
+      agentNames().forEach(function (n) {
+        var a = state.agents[n];
+        var s = a.stats;
+        if (!s) { h4 += '<div class="mrow"><span class="nm">@ ' + esc(n) + '</span><span class="desc">no stats yet</span></div>'; return; }
+        h4 += '<div class="mrow"><span class="nm">@ ' + esc(n) + '</span><span class="desc">' + (s.totalMessages || 0) + " msgs · " + (s.toolCalls || 0) + " tools</span><span class=\"stat\"><b>$" + Number(s.cost || 0).toFixed(4) + "</b> · " + (s.tokens && s.tokens.total || 0) + " tok</span></div>";
+      });
+      mbodyEl.innerHTML = h4;
+    }
+  }
+  // ---------- actions ----------
+  function post(url, body) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .catch(function (e) { return { ok: false, error: String(e) }; });
+  }
+  function rpc(agent, command, payload) {
+    return post("/rpc", { agent: agent, command: command, payload: payload || {} });
+  }
+
+  function send() {
+    var input = document.getElementById("msgInput");
+    if (!input) return;
+    var text = input.value.trim();
+    if (!text) return;
+    if (isChannelSel(state.selected)) {
+      var to = (document.getElementById("toSel") || {}).value || "group";
+      var target = to.indexOf("#") === 0 ? to.slice(1) : to; // "#dev" -> "dev"; "group"/"alice" unchanged
+      post("/message", { to: target, text: text });
+    } else {
+      // followUp queues the message if the agent is mid-turn (e.g. polling its inbox)
+      rpc(state.selected, "prompt", { message: text, streamingBehavior: "followUp" });
+    }
+    input.value = "";
+  }
+
+  function selectChat(name) {
+    state.selected = name;
+    if (!isChannelSel(name)) {
+      // agent: seed the conversation from the agent's session if not already loaded
+      if (!state.conv[name] || !state.conv[name].items.length) {
+        rpc(name, "get_messages").then(function (r) {
+          if (r.ok && r.result && r.result.data && r.result.data.messages) {
+            seedFromMessages(name, r.result.data.messages);
+            if (state.selected === name) renderConversation();
+          }
+        });
+      }
+    }
+    renderAll();
+  }
+
+  // ---------- form dialog (the desktop shell has no window.prompt) ----------
+  var dialogEl = document.getElementById("dialog");
+  var dialogForm = document.getElementById("dialogForm");
+  var dialogSubmitBtn = document.getElementById("dialogSubmit");
+  var dialogErrorEl = document.getElementById("dialogError");
+  var dialogFieldsEl = document.getElementById("dialogFields");
+  var dialogAction = null;
+
+  function fieldHtml(f) {
+    var control = f.options
+      ? '<select name="' + esc(f.name) + '">' + f.options.map(function (o) { return '<option value="' + esc(o) + '">' + esc(o || "(none)") + "</option>"; }).join("") + "</select>"
+      : '<input name="' + esc(f.name) + '" value="' + esc(f.value || "") + '" placeholder="' + esc(f.placeholder || "") + '"' +
+        (f.required ? " required" : "") + (f.pattern ? ' pattern="' + esc(f.pattern) + '" title="' + esc(f.hint || "") + '"' : "") + ">";
+    return '<div class="field"><label>' + esc(f.label) + "</label>" + control + "</div>";
+  }
+
+  // opts: { title, action, fields, submit(values) -> Promise<{ok, error}> }; stays open and shows the error on failure
+  function openDialog(opts) {
+    dialogAction = opts.submit;
+    document.getElementById("dialogTitle").textContent = opts.title;
+    dialogSubmitBtn.textContent = opts.action;
+    dialogSubmitBtn.disabled = false;
+    dialogErrorEl.textContent = "";
+    dialogFieldsEl.innerHTML = opts.fields.map(fieldHtml).join("");
+    dialogEl.classList.add("show");
+    var first = dialogFieldsEl.querySelector("input,select");
+    first.focus();
+    if (first.select) first.select();
+  }
+  function closeDialog() { dialogEl.classList.remove("show"); dialogAction = null; }
+
+  function newChat() {
+    openDialog({
+      title: "New agent",
+      action: "Start agent",
+      fields: [
+        { name: "name", label: "Name", value: "agent-" + (agentNames().length + 1), required: true, pattern: "[A-Za-z0-9_\\-]{1,64}", hint: "Letters, digits, _ and -" },
+        { name: "cwd", label: "Working directory (empty: the fleet root)" },
+        { name: "model", label: "Model (empty: the default)", placeholder: "provider/model" },
+        { name: "role", label: "Role", options: ["", "planner", "implementer", "reviewer", "supervisor"] }
+      ],
+      submit: function (v) {
+        var spec = { name: v.name };
+        if (v.cwd) spec.cwd = v.cwd;
+        if (v.model) spec.model = v.model;
+        if (v.role) spec.role = v.role;
+        return post("/agents", spec);
+      }
+    });
+  }
+
+  function renameSession(name) {
+    openDialog({
+      title: "Session name for " + name,
+      action: "Save",
+      fields: [{ name: "session", label: "Display name", value: state.agents[name].sessionName || name, required: true }],
+      submit: function (v) { return post("/session-name", { name: name, sessionName: v.session }); }
+    });
+  }
+
+  function headerAction(act) {
+    var name = state.selected;
+    if (isChannelSel(name)) {
+      if (act === "clear-channel") { var cn = channelNameOf(name); state.group = state.group.filter(function (m) { return m.to !== cn; }); renderConversation(); }
+      else if (act === "manage-channel") { state.settingsTab = "channels"; syncTabs(); renderSettings(); overlayEl.classList.add("show"); }
+      return;
+    }
+    if (act === "new-session") rpc(name, "new_session").then(function () { state.conv[name] = { items: [], live: null }; renderConversation(); });
+    else if (act === "rename") renameSession(name);
+    else if (act === "compact") rpc(name, "compact");
+    else if (act === "abort") rpc(name, "abort");
+  }
+
+  function mcpAdd() {
+    var name = (document.getElementById("mcpName") || {}).value.trim();
+    var cmd = (document.getElementById("mcpCmd") || {}).value.trim();
+    var args = (document.getElementById("mcpArgs") || {}).value.trim();
+    var url = (document.getElementById("mcpUrl") || {}).value.trim();
+    var env = (document.getElementById("mcpEnv") || {}).value.trim();
+    if (!name) { alert("Name is required"); return; }
+    var entry = {};
+    if (cmd) { entry.command = cmd; if (args) entry.args = args.split(/\s+/); }
+    else if (url) { entry.url = url; }
+    else { alert("Provide a command (stdio) or a URL (http)"); return; }
+    if (env) { entry.env = {}; env.split(/\s+/).forEach(function (kv) { var i = kv.indexOf("="); if (i > 0) entry.env[kv.slice(0, i)] = kv.slice(i + 1); }); }
+    state.mcp.mcpServers[name] = entry;
+    post("/mcp", state.mcp).then(function () { renderSettings(); });
+  }
+  function mcpRemove(name) {
+    delete state.mcp.mcpServers[name];
+    post("/mcp", state.mcp).then(function () { renderSettings(); });
+  }
+
+  // ---------- SSE ----------
+  var lastConvRender = 0;
+  function scheduleConvRender(immediate) {
+    var now = Date.now();
+    if (immediate || now - lastConvRender > 80) { lastConvRender = now; renderConversation(); }
+    else if (!scheduleConvRender._t) scheduleConvRender._t = setTimeout(function () { scheduleConvRender._t = null; lastConvRender = Date.now(); renderConversation(); }, 80);
+  }
+
+  function onSnapshot(snap) {
+    state.agents = {};
+    (snap.agents || []).forEach(function (a) { state.agents[a.name] = { info: a, status: a.status, model: a.model, role: a.role, sessionName: a.sessionName, stats: null }; });
+    state.group = snap.messages || [];
+    state.channels = snap.channels || [];
+    if (!state.channels.some(function (c) { return c.name === "group"; })) state.channels.unshift({ name: "group", members: agentNames(), supervisor: null });
+    if (isChannelSel(state.selected)) {
+      if (channelNameOf(state.selected) !== "group" && !getChannel(channelNameOf(state.selected))) state.selected = "group";
+    } else if (!state.agents[state.selected]) {
+      state.selected = "group";
+    }
+    metaEl.textContent = agentNames().length + " agent(s)";
+    state.paused = snap.paused || null;
+    renderPaused();
+    renderAll();
+    // refresh mcp + extensions
+    fetch("/mcp").then(function (r) { return r.json(); }).then(function (m) { state.mcp = m; }).catch(function () {});
+    fetch("/extensions").then(function (r) { return r.json(); }).then(function (e) { state.extensions = e; }).catch(function () {});
+  }
+
+  var es = new EventSource("/events");
+  es.onopen = function () { connEl.className = "dot on"; };
+  es.onerror = function () { connEl.className = "dot"; };
+  es.addEventListener("snapshot", function (e) { onSnapshot(JSON.parse(e.data)); });
+  es.addEventListener("message", function (e) {
+    var m = JSON.parse(e.data);
+    state.group.push(m);
+    if (state.group.length > 300) state.group = state.group.slice(-300);
+    if (isChannelSel(state.selected) && m.to === channelNameOf(state.selected)) renderConversation();
+  });
+  es.addEventListener("agent_event", function (e) {
+    var d = JSON.parse(e.data);
+    applyEvent(d.name, d.event);
+    if (state.selected === d.name) {
+      var isDelta = d.event.type === "message_update";
+      scheduleConvRender(!isDelta);
+    }
+  });
+  es.addEventListener("status", function (e) {
+    var s = JSON.parse(e.data);
+    if (state.agents[s.name]) { state.agents[s.name].status = s.status; renderSidebar(); if (state.selected === s.name) renderHeader(); }
+  });
+  es.addEventListener("paused", function (e) { state.paused = JSON.parse(e.data).reason; renderPaused(); });
+  es.addEventListener("agent_added", function (e) {
+    var a = JSON.parse(e.data);
+    // the "to" picker is patched, not re-rendered: that would wipe a draft in the composer
+    var toSel = document.getElementById("toSel");
+    if (toSel && !state.agents[a.name]) toSel.add(new Option("@ " + a.name, a.name));
+    state.agents[a.name] = { info: a, status: a.status, model: a.model, role: a.role, sessionName: a.sessionName, stats: null };
+    metaEl.textContent = agentNames().length + " agent(s)";
+    renderSidebar();
+    if (state.selected === a.name) renderHeader();
+  });
+  es.addEventListener("session_name", function (e) {
+    var s = JSON.parse(e.data);
+    if (state.agents[s.name]) { state.agents[s.name].sessionName = s.sessionName; renderSidebar(); if (state.selected === s.name) renderHeader(); }
+  });
+  es.addEventListener("channels", function (e) {
+    state.channels = JSON.parse(e.data);
+    if (!state.channels.some(function (c) { return c.name === "group"; })) state.channels.unshift({ name: "group", members: agentNames(), supervisor: null });
+    renderSidebar();
+    if (isChannelSel(state.selected)) renderHeader();
+  });
+  es.addEventListener("extensions", function (e) { var s = JSON.parse(e.data); state.extensions.selected[s.agent] = s.extensions; });
+  es.addEventListener("mcp", function (e) { state.mcp = JSON.parse(e.data); });
+
+  // ---------- wiring ----------
+  chatListEl.addEventListener("click", function (e) {
+    var chat = e.target.closest(".chat");
+    if (chat) selectChat(chat.getAttribute("data-chat"));
+  });
+  document.getElementById("newChatBtn").onclick = newChat;
+  var stopAllBtn = document.getElementById("stopAllBtn");
+  stopAllBtn.onclick = function () {
+    stopAllBtn.disabled = true;
+    post("/stop-all", {}).then(function (r) {
+      stopAllBtn.disabled = false;
+      if (!r.ok) alert("Could not stop the fleet: " + (r.error || ""));
+    });
+  };
+  dialogForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    if (!dialogAction) return;
+    var values = {};
+    new FormData(dialogForm).forEach(function (v, k) { values[k] = String(v).trim(); });
+    dialogSubmitBtn.disabled = true;
+    dialogErrorEl.textContent = "";
+    dialogAction(values).then(function (r) {
+      dialogSubmitBtn.disabled = false;
+      if (r.ok) closeDialog(); else dialogErrorEl.textContent = r.error || "Request failed";
+    });
+  });
+  document.getElementById("dialogClose").onclick = closeDialog;
+  dialogEl.addEventListener("click", function (e) { if (e.target === dialogEl) closeDialog(); });
+  dialogEl.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDialog(); });
+  headerEl.addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-act]");
+    if (b) headerAction(b.getAttribute("data-act"));
+  });
+  document.getElementById("settingsBtn").onclick = function () { state.settingsTab = "fleet"; syncTabs(); renderSettings(); overlayEl.classList.add("show"); };
+  document.getElementById("closeSettings").onclick = function () { overlayEl.classList.remove("show"); };
+  overlayEl.addEventListener("click", function (e) { if (e.target === overlayEl) overlayEl.classList.remove("show"); });
+  document.getElementById("tabs").addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-tab]");
+    if (b) { state.settingsTab = b.getAttribute("data-tab"); syncTabs(); renderSettings(); }
+  });
+  function syncTabs() {
+    document.querySelectorAll("#tabs button").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tab") === state.settingsTab); });
+  }
+
+  // initial render
+  renderAll();
+})();
+</script>
+</body>
+</html>

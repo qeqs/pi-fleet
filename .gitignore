@@ -1,0 +1,9 @@
+node_modules/
+.pi-fleet/
+*.log
+
+# local hubs and pi settings from manual runs
+.123pi-fleet/
+.gui-test-hub/
+.smoke/
+.pi/

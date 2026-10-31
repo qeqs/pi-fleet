@@ -78,6 +78,20 @@ export interface FleetMessage {
 
 export type AgentStatus = "starting" | "idle" | "busy" | "stopped";
 
+/** A position on the bus that stays meaningful across rotations. */
+export interface BusCursor {
+  gen: number;
+  offset: number;
+}
+
+/** A wake on its way to an agent, kept on disk until the agent has finished with it. */
+export interface InboxEntry {
+  id: string;
+  text: string;
+  /** Accepted by the agent, so only a restart mid-work brings it back. */
+  delivered: boolean;
+}
+
 /**
  * A named group chat (channel). Members are agent names; the supervisor is the
  * member that routes each message to the relevant members and maintains the
@@ -111,6 +125,10 @@ export interface AgentInfo {
   /** named pipe paths (bridge transport); present when the agent runs via a bridge */
   pipeIn?: string;
   pipeOut?: string;
+  /** pi's session file, so a restart continues the same conversation */
+  sessionFile?: string;
+  /** how far this agent's own poller got while no supervisor was attached */
+  handled?: BusCursor;
 }
 
 export class Hub {
@@ -155,9 +173,9 @@ export class Hub {
   rotateIfLarge(maxBytes: number, keepArchives = 5): boolean {
     if (this.messagesSize() <= maxBytes) return false;
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const archive = path.join(this.dir, `messages-${ts}.jsonl`);
+    const archive = path.join(this.dir, `${this.archivePrefix(this.generation())}${ts}.jsonl`);
     fs.renameSync(this.messagesFile, archive);
-    fs.writeFileSync(this.messagesFile, "", "utf8");
+    fs.appendFileSync(this.messagesFile, "", "utf8"); // append: a writer may already have recreated it
     this.bumpGeneration();
     const archives = fs
       .readdirSync(this.dir)
@@ -202,10 +220,41 @@ export class Hub {
 
   /** Read complete messages at/after a byte offset. Returns the next offset. */
   readMessagesSince(offset: number): { messages: FleetMessage[]; nextOffset: number } {
-    if (!fs.existsSync(this.messagesFile)) return { messages: [], nextOffset: offset };
-    const stat = fs.statSync(this.messagesFile);
+    return this.readLogSince(this.messagesFile, offset);
+  }
+
+  private archivePrefix(gen: number): string {
+    return `messages-g${String(gen).padStart(6, "0")}-`;
+  }
+
+  /** Where the bus ends right now. */
+  busEnd(): BusCursor {
+    return { gen: this.generation(), offset: this.messagesSize() };
+  }
+
+  /**
+   * Every complete message after a cursor, in order, following the cursor through
+   * rotations: what was still unread when the bus rotated is read from the archive.
+   */
+  readBus(cursor: BusCursor): { messages: FleetMessage[]; next: BusCursor } {
+    const messages: FleetMessage[] = [];
+    let { gen, offset } = cursor;
+    const current = this.generation();
+    for (; gen < current; gen++, offset = 0) {
+      const archive = fs.readdirSync(this.dir).find((f) => f.startsWith(this.archivePrefix(gen)));
+      if (archive) messages.push(...this.readLogSince(path.join(this.dir, archive), offset).messages);
+    }
+    const rest = this.readMessagesSince(offset);
+    // a rotation just now means that offset was applied to the wrong file: read again next time
+    if (this.generation() !== current) return { messages, next: { gen, offset } };
+    return { messages: [...messages, ...rest.messages], next: { gen, offset: rest.nextOffset } };
+  }
+
+  private readLogSince(file: string, offset: number): { messages: FleetMessage[]; nextOffset: number } {
+    if (!fs.existsSync(file)) return { messages: [], nextOffset: offset };
+    const stat = fs.statSync(file);
     if (stat.size <= offset) return { messages: [], nextOffset: offset };
-    const fd = fs.openSync(this.messagesFile, "r");
+    const fd = fs.openSync(file, "r");
     const length = stat.size - offset;
     const buf = Buffer.alloc(length);
     fs.readSync(fd, buf, 0, length, offset);
@@ -361,6 +410,68 @@ export class Hub {
     return path.join(this.dir, `agents`, `${name}.log`);
   }
 
+  // ---------- delivery: bus cursor + per-agent inbox ----------
+  //
+  // The bus says what was said; these say what has been acted on, so a crash at any
+  // point loses nothing. The supervisor saves its cursor only after a message's
+  // wakes are in the agents' inboxes, and an inbox entry is removed only once the
+  // agent has settled. Only the supervisor writes these files.
+
+  get cursorFile(): string {
+    return path.join(this.dir, "cursor.json");
+  }
+
+  readCursor(): BusCursor | null {
+    try {
+      const c = JSON.parse(fs.readFileSync(this.cursorFile, "utf8")) as BusCursor;
+      return typeof c.gen === "number" && typeof c.offset === "number" ? c : null;
+    } catch {
+      return null;
+    }
+  }
+
+  writeCursor(cursor: BusCursor): void {
+    this.ensureDir();
+    replaceFile(this.cursorFile, JSON.stringify(cursor));
+  }
+
+  private inboxFile(name: string): string {
+    return path.join(this.dir, "inbox", `${name}.json`);
+  }
+
+  readInbox(name: string): InboxEntry[] {
+    try {
+      return JSON.parse(fs.readFileSync(this.inboxFile(name), "utf8")) as InboxEntry[];
+    } catch {
+      return [];
+    }
+  }
+
+  private writeInbox(name: string, entries: InboxEntry[]): void {
+    fs.mkdirSync(path.dirname(this.inboxFile(name)), { recursive: true });
+    replaceFile(this.inboxFile(name), JSON.stringify(entries, null, 2));
+  }
+
+  enqueueWake(name: string, text: string): InboxEntry {
+    const entry: InboxEntry = { id: crypto.randomUUID(), text, delivered: false };
+    this.writeInbox(name, [...this.readInbox(name), entry]);
+    return entry;
+  }
+
+  markDelivered(name: string, id: string): void {
+    this.writeInbox(name, this.readInbox(name).map((e) => (e.id === id ? { ...e, delivered: true } : e)));
+  }
+
+  /** The agent has settled: whatever it had accepted is finished. */
+  ackDelivered(name: string): void {
+    const entries = this.readInbox(name);
+    if (entries.some((e) => e.delivered)) this.writeInbox(name, entries.filter((e) => !e.delivered));
+  }
+
+  clearInbox(name: string): void {
+    if (this.readInbox(name).length > 0) this.writeInbox(name, []);
+  }
+
   // ---------- pause + hop count ----------
   //
   // A paused fleet stays up, but agent messages wake nobody, which is what breaks
@@ -389,11 +500,7 @@ export class Hub {
   }
 
   resume(): void {
-    try {
-      fs.unlinkSync(this.pausedFile);
-    } catch {
-      // not paused
-    }
+    fs.rmSync(this.pausedFile, { force: true });
   }
 
   /** Why the fleet is paused, or null if it is running. */

@@ -129,7 +129,7 @@ export function killProcessTree(pid: number): void {
  * it over named pipes), then connect a PiRpcBridge client to those pipes.
  * The bridge survives the supervisor exiting, enabling detached mode + re-attach.
  */
-export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Limits, model?: string, lean = false, role?: string, extensions?: string[]): Promise<AgentHandle> {
+export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Limits, model?: string, lean = false, role?: string, extensions?: string[], sessionFile?: string): Promise<AgentHandle> {
   if (!isValidAgentName(name)) throw new Error(`invalid agent name "${name}": use letters, digits, "_" and "-" (not group, user or system)`);
   if (!fs.existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const logFile = path.resolve(hub.logFileFor(name)); // absolute: the bridge's cwd is hub.dir
@@ -143,6 +143,7 @@ export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Li
   for (const ext of extensions ?? []) args.push("--extension", ext);
   if (model) args.push("--model", model);
   if (lean) args.push(...LEAN_PI_ARGS);
+  if (sessionFile) args.push("--session", sessionFile);
   const pipeIn = pipePath("in", name, hub.dir);
   const pipeOut = pipePath("out", name, hub.dir);
   const bridgeScript = path.join(ROOT, "src", "bridge.ts");

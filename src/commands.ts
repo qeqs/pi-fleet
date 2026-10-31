@@ -58,6 +58,7 @@ export async function cmdStop(target: string | undefined, dir: string | undefine
       console.log(`${a.name}: ${String(err)}`);
     }
     hub.updateAgent(a.name, { status: "stopped" });
+    hub.ackDelivered(a.name); // stopped on purpose: its work in progress is not to be resumed
   }
 }
 

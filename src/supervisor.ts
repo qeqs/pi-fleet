@@ -3,6 +3,7 @@
  * agents, serves the GUI and runs the terminal chat.
  */
 import { execSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { Hub, isPidAlive, formatMessage, shortId, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type ChannelConfig, type FleetMessage } from "./hub.ts";
@@ -15,11 +16,15 @@ import { expandTemplate, templateNames, templateDescription } from "./templates.
 import { discoverExtensions, readMcpConfig, writeMcpConfig } from "./pi-resources.ts";
 import { computeWakes } from "./wakes.ts";
 import { killProcessTree, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
+import { RestartPolicy } from "./restart.ts";
 import { UsageError, type FleetArgs, type Limits } from "./cli.ts";
 
-/** A wake pi refuses (e.g. mid-compaction) is retried for about a minute before it is reported lost. */
+/** A wake pi refuses (e.g. mid-compaction) is retried for about a minute before it is left for later. */
 const WAKE_RETRIES = 12;
 const WAKE_RETRY_MS = 5000;
+
+/** Put in front of a wake the agent had accepted but not finished when it went down. */
+const INTERRUPTED_NOTE = "You were restarted before you finished the work below. Check what is already done, then carry on.";
 
 function printBanner() {
   console.log("");
@@ -35,6 +40,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   const agents = new Map<string, AgentHandle>();
   const spawnedHere = new Set<string>(); // not re-attached: this run answers for them if the start fails
   const stopping = new Set<string>(); // stopped on purpose, so their exit is not a crash
+  const restarts = new Map<string, RestartPolicy>();
   const leanCache = new Map<string, number | undefined>();
   let shuttingDown = false;
   let gui: GuiServer | null = null;
@@ -123,6 +129,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         print(`  ⚙ [${name}] ${tool}`);
       } else if (t === "agent_settled") {
         print(`  ✓ [${name}] settled — ${listAgentsLine()}`);
+        hub.ackDelivered(name);
       }
       // keep the GUI status badge in sync with the run state
       if (t === "agent_start") gui?.broadcast("status", { name, status: "busy" });
@@ -138,13 +145,45 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" stopped unexpectedly. Its log: ${hub.logFileFor(name)}` });
       gui?.broadcast("status", { name, status: "stopped" });
       reassignRouters();
+      restartAfterCrash(name);
     };
+  }
+
+  /** Bring a crashed agent back, spacing the attempts out and giving up on a crash loop. */
+  function restartAfterCrash(name: string): void {
+    if (args.noRestart || shuttingDown) return;
+    const policy = restarts.get(name) ?? new RestartPolicy();
+    restarts.set(name, policy);
+    const delay = policy.next();
+    if (delay === null) {
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" keeps crashing, so it was left stopped. Check its log, then use /restart.` });
+      return;
+    }
+    hub.appendMessage({ from: "system", to: "group", kind: "system", text: `restarting agent "${name}" in ${delay / 1000}s` });
+    setTimeout(() => {
+      reviveAgent(name).catch((err: Error) => {
+        hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" did not restart: ${err.message}` });
+        restartAfterCrash(name);
+      });
+    }, delay);
+  }
+
+  /** Start a stopped agent again as it was, with its conversation and whatever it was doing. */
+  async function reviveAgent(name: string): Promise<void> {
+    const info = hub.readAgents()[name];
+    if (shuttingDown || agents.has(name) || !info) return;
+    await spawnAndTrack(name, info.cwd, info.model, info.role, extensionsFor(name));
+    refreshDefaultChannel();
+    schedulePump(name, true);
   }
 
   async function spawnAndTrack(name: string, cwd: string, model?: string, role?: string, extensions?: string[]) {
     if (agents.has(name)) throw new Error(`agent "${name}" already running`);
     const lean = await resolveLean(model, leanFor(name), leanCache);
-    const handle = await spawnAgent(hub, name, cwd, limits, model, lean, role, extensions);
+    const prior = hub.readAgents()[name];
+    // pi keeps sessions per directory, and writes none until the first exchange
+    const resume = !args.fresh && prior?.sessionFile && prior.cwd === cwd && fs.existsSync(prior.sessionFile) ? prior.sessionFile : undefined;
+    const handle = await spawnAgent(hub, name, cwd, limits, model, lean, role, extensions, resume);
     spawnedHere.add(name);
     agents.set(name, handle);
     wire(handle, name);
@@ -152,7 +191,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     const leanLabel = lean ? " lean" : "";
     const roleLabel = role ? ` role=${role}` : "";
     const extLabel = extensions && extensions.length ? ` plugins=${extensions.length}` : "";
-    print(`  + [${name}] spawned (pid ${handle.rpc.pid}, cwd ${cwd}${modelLabel}${leanLabel}${roleLabel}${extLabel})`);
+    const resumeLabel = resume ? " resumed" : "";
+    print(`  + [${name}] spawned (pid ${handle.rpc.pid}, cwd ${cwd}${modelLabel}${leanLabel}${roleLabel}${extLabel}${resumeLabel})`);
     gui?.broadcast("agent_added", hub.readAgents()[name]);
     // pi answers its first RPC once booted, which is when the agent turns idle
     handle.rpc.getState().then(
@@ -224,6 +264,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     const running = [...agents.values()];
     await Promise.allSettled(
       running.map(async (a) => {
+        hub.clearInbox(a.name);
         // in this order: pi carries on with whatever is still queued after an abort
         await a.rpc.sendCommand({ type: "clear_queue" });
         await a.rpc.sendCommand({ type: "abort" });
@@ -377,21 +418,32 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     }
   }
 
-  // tail the bus
-  let offset = hub.messagesSize();
+  // tail the bus, picking up where the last supervisor stopped. Agents alive from a
+  // detached run may have got further by themselves, so those messages are theirs.
+  let cursor = [hub.readCursor() ?? hub.busEnd(), ...live.flatMap((a) => (a.handled ? [a.handled] : []))].reduce((a, b) =>
+    b.gen > a.gen || (b.gen === a.gen && b.offset > a.offset) ? b : a,
+  );
+  hub.writeCursor(cursor);
   const lookup = new Map<string, FleetMessage>();
   const ROTATE_BYTES = 2 * 1024 * 1024; // 2 MB
 
-  /** Hand one agent its wake text; anything that cannot land is reported on the bus. */
-  async function deliverWake(name: string, text: string): Promise<void> {
-    let reason = "agent is not running";
+  /** Hand one agent one wake. False means it stays in the inbox for later. */
+  async function deliverWake(name: string, text: string): Promise<boolean> {
+    let reason = "";
     for (let attempt = 0; attempt < WAKE_RETRIES; attempt++) {
-      if (hub.pausedReason() !== null) return; // a retry must not outlive Stop all
+      if (hub.pausedReason() !== null) return false; // a retry must not outlive Stop all
       const handle = agents.get(name);
-      if (!handle || !handle.rpc.alive) break;
+      if (!handle || !handle.rpc.alive) {
+        if (!waitingFor.has(name)) {
+          waitingFor.add(name);
+          hub.appendMessage({ from: "system", to: "group", kind: "system", text: `"${name}" is not running: its messages will wait until it is back` });
+        }
+        return false;
+      }
+      waitingFor.delete(name);
       try {
         const res = await handle.rpc.prompt(text, "followUp");
-        if (res.success !== false) return;
+        if (res.success !== false) return true;
         reason = String(res.error ?? "refused by pi");
       } catch (err) {
         // a timed-out prompt may still land, so sending it again could double it
@@ -400,11 +452,27 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       }
       await new Promise((r) => setTimeout(r, WAKE_RETRY_MS));
     }
-    hub.appendMessage({ from: "system", to: "group", kind: "system", text: `message for "${name}" was not delivered: ${reason}` });
+    hub.appendMessage({ from: "system", to: "group", kind: "system", text: `message for "${name}" could not be delivered yet: ${reason}` });
+    return false;
+  }
+
+  const waitingFor = new Set<string>(); // agents already reported as not running
+
+  /** Deliver an agent's inbox in order. What was accepted but unfinished comes back after a restart. */
+  async function pumpInbox(name: string, restarted: boolean): Promise<void> {
+    for (const entry of hub.readInbox(name)) {
+      if (entry.delivered && !restarted) continue;
+      const text = entry.delivered ? `${INTERRUPTED_NOTE}\n\n${entry.text}` : entry.text;
+      if (!(await deliverWake(name, text))) return;
+      hub.markDelivered(name, entry.id);
+    }
   }
 
   // One queue per agent, so a retry cannot let a later message overtake it.
   const wakeQueues = new Map<string, Promise<void>>();
+  function schedulePump(name: string, restarted = false): void {
+    wakeQueues.set(name, (wakeQueues.get(name) ?? Promise.resolve()).then(() => pumpInbox(name, restarted)));
+  }
 
   // Direct wake: while attached, the supervisor is the wake authority. For each
   // new chat message it computes which agents it wakes (channel-aware: a
@@ -412,20 +480,9 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   // wake straight over RPC — no 3s poll delay. A busy agent gets it as a
   // follow-up to its current run. The agent's own poller stays dormant while
   // the heartbeat is fresh (see below), so there is no double-wake.
-  function pushDirectWakes(messages: FleetMessage[]): void {
-    for (const [name, text] of computeWakes(messages, hub, lookup, limits.maxHops)) {
-      wakeQueues.set(name, (wakeQueues.get(name) ?? Promise.resolve()).then(() => deliverWake(name, text)));
-    }
-  }
-
   const tailer = setInterval(() => {
     try {
-      if (hub.rotateIfLarge(ROTATE_BYTES)) {
-        offset = 0;
-        lookup.clear();
-      }
-      const { messages, nextOffset } = hub.readMessagesSince(offset);
-      offset = nextOffset;
+      const { messages, next } = hub.readBus(cursor);
       const channels = messages.length > 0 ? hub.readChannels() : [];
       for (const m of messages) {
         lookup.set(m.id, m);
@@ -433,12 +490,21 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         print(formatMessage(m, lookup, channels));
         gui?.broadcast("message", m);
       }
-      pushDirectWakes(messages);
+      const woken = [...computeWakes(messages, hub, lookup, limits.maxHops)];
+      for (const [name, text] of woken) hub.enqueueWake(name, text);
+      // only now is the position safe to save: a crash above replays these messages
+      cursor = next;
+      if (messages.length > 0) hub.writeCursor(cursor);
+      for (const [name] of woken) schedulePump(name);
+      if (hub.rotateIfLarge(ROTATE_BYTES)) lookup.clear();
       syncPaused();
     } catch {
       // ignore
     }
   }, 700);
+
+  // whatever waited in the inboxes while the fleet was down
+  for (const name of agents.keys()) schedulePump(name, spawnedHere.has(name));
 
   printBanner();
   if (!headless) {
@@ -454,6 +520,19 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     print(`  ⚙ headless — serving the web UI; press Ctrl+C to stop`);
   }
 
+  /** Stop an agent and return once its bridge is really gone. */
+  async function endAgent(handle: AgentHandle): Promise<void> {
+    const { name } = handle;
+    stopping.add(name);
+    const pipeIn = hub.readAgents()[name]?.pipeIn;
+    handle.rpc.close();
+    killProcessTree(handle.rpc.pid); // kill the bridge (and its pi child)
+    agents.delete(name);
+    hub.updateAgent(name, { status: "stopped" });
+    gui?.broadcast("status", { name, status: "stopped" });
+    for (let i = 0; pipeIn && i < 50 && (await bridgeListening(pipeIn)); i++) await new Promise((r) => setTimeout(r, 100));
+  }
+
   async function stopAgent(name: string) {
     const handle = agents.get(name);
     if (!handle) {
@@ -461,13 +540,18 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       return;
     }
     print(`  - stopping [${name}]…`);
-    stopping.add(name);
-    handle.rpc.close();
-    killProcessTree(handle.rpc.pid); // kill the bridge (and its pi child)
-    agents.delete(name);
-    hub.updateAgent(name, { status: "stopped" });
-    gui?.broadcast("status", { name, status: "stopped" });
+    await endAgent(handle);
+    hub.ackDelivered(name); // stopped on purpose: its work in progress is not to be resumed
     reassignRouters();
+  }
+
+  /** Restart an agent by hand. It keeps its conversation and any work in progress. */
+  async function restartAgent(name: string): Promise<void> {
+    const handle = agents.get(name);
+    if (handle) await endAgent(handle);
+    else if (!hub.readAgents()[name]) throw new Error(hub.unknownTarget(name));
+    await reviveAgent(name);
+    print(`  ↻ [${name}] restarted`);
   }
 
   /** Run one parsed terminal command. */
@@ -521,6 +605,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         return;
       case "stop":
         return stopAgent(cmdArgs);
+      case "restart":
+        return restartAgent(cmdArgs);
       case "channel": {
         const parts = cmdArgs.split(/\s+/).filter(Boolean);
         if (parts.length === 0) {
@@ -596,6 +682,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         killProcessTree(a.rpc.pid);
         try {
           hub.updateAgent(a.name, { status: "stopped" });
+          hub.ackDelivered(a.name); // you quit: work in progress is not to resume by itself
         } catch {
           // ignore
         }

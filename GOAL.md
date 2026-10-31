@@ -21,6 +21,12 @@ Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
   in the roadmap. (Pull requests need `gh` or a token, which this environment does not have.)
 
 ## Progress log
+- 2026-11-01: Milestone 2 done (0.3.0). Demonstrated by `resumes the task after every process
+  is killed, and loses no message` in `test/e2e.test.ts`: the supervisor and all agents are
+  killed mid-task, a message is posted while everything is down, and after `fleet up` the
+  agent has its old context, is told it was interrupted, and receives the message. Cursor,
+  inbox, session resume, auto-restart and `/restart` added; `readBus` follows a reader through
+  rotations (the old code lost whatever was unread when the bus rotated).
 - 2026-11-01: Milestone 1 done (0.2.0). Every failure on the list now reaches the user. Bad
   input ends in a sentence and a non-zero exit; a crash, a router loss, a stalled model and a
   model error all post to `#group`. Demonstrated by one test per failure in `test/e2e.test.ts`

@@ -11,6 +11,10 @@ describe("parseArgs", () => {
     expect(parseArgs(["--no-lean"]).lean).toBe(false);
   });
 
+  it("reads the restart options", () => {
+    expect(parseArgs(["--fresh", "--no-restart"])).toMatchObject({ fresh: true, noRestart: true });
+  });
+
   it("reads the runaway limits, keeping an explicit 0", () => {
     expect(parseArgs(["--max-turns", "25", "--max-hops", "0"])).toMatchObject({ maxTurns: 25, maxHops: 0 });
   });

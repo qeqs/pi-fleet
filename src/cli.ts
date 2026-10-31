@@ -33,8 +33,8 @@ function valueArg(flag: string, value: string | undefined): string {
   return value;
 }
 
-export function parseArgs(argv: string[]): { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; rest: string[] } {
-  const out: { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; rest: string[] } = { agents: [], rest: [] };
+export function parseArgs(argv: string[]): { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; fresh?: boolean; noRestart?: boolean; rest: string[] } {
+  const out: { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; fresh?: boolean; noRestart?: boolean; rest: string[] } = { agents: [], rest: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dir") out.dir = valueArg(a, argv[++i]);
@@ -44,6 +44,8 @@ export function parseArgs(argv: string[]): { dir?: string; agents: string[]; mod
     else if (a === "--lean") out.lean = true;
     else if (a === "--no-lean") out.lean = false;
     else if (a === "--detach") out.detach = true;
+    else if (a === "--fresh") out.fresh = true;
+    else if (a === "--no-restart") out.noRestart = true;
     else if (a === "--gui") out.gui = true;
     else if (a === "--open") out.open = true;
     else if (a === "--port") out.port = portArg(argv[++i]);
@@ -81,6 +83,8 @@ Usage:
   --gui: open a web UI (group chat + per-agent live RPC-event activity); --open launches the browser.
          Open the link printed at startup: it carries the access token (kept in <dir>/gui-token).
   --host H: GUI bind address (default 127.0.0.1; use 0.0.0.0 for LAN access). serve runs the web UI headless.
+  --fresh: start agents with new sessions instead of resuming their conversations.
+  --no-restart: leave crashed agents stopped instead of restarting them (up to 3 times in 10 minutes).
   --max-turns N: abort an agent after N turns in one run (default ${DEFAULT_MAX_TURNS}; 0 = no limit).
   --max-hops N: pause the fleet after N agent messages since your last message (default ${DEFAULT_MAX_HOPS}; 0 = no limit).
 
@@ -93,5 +97,6 @@ Group chat input:
   /channel        list channels; /channel add <name> <m1,m2> [sup]; /channel rm <name>
   /new name [cwd] [model] [role]   spawn an agent
   /stop name      stop an agent
+  /restart name   restart an agent; it keeps its conversation
   /stopall        abort every run and pause the fleet until your next message
   /quit           stop all and exit`;

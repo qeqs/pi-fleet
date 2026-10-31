@@ -60,12 +60,12 @@ Linux and macOS have never been run, and the riskiest logic cannot be unit-teste
 
 ## 2. Work survives restarts
 
-- [ ] Session resume: store `sessionFile` from `get_state` and restart pi with `--session`, so an agent keeps its context
-- [ ] Durable inbox: a message for a stopped agent waits and is delivered when it returns
-- [ ] Delivery is acknowledged, so a supervisor crash between read and wake loses nothing
-- [ ] Crashed agents restart automatically, with backoff and a retry cap
-- [ ] `/restart name`, so plugin and model changes can take effect without a full stop
-- [ ] Bus rotation is safe while agents are reading
+- [x] Session resume: store `sessionFile` from `get_state` and restart pi with `--session`, so an agent keeps its context
+- [x] Durable inbox: a message for a stopped agent waits and is delivered when it returns
+- [x] Delivery is acknowledged, so a supervisor crash between read and wake loses nothing
+- [x] Crashed agents restart automatically, with backoff and a retry cap
+- [x] `/restart name`, so plugin and model changes can take effect without a full stop
+- [x] Bus rotation is safe while agents are reading
 
 **Done when:** killing every process mid-task and running `fleet up` resumes the task with its context, and no message is lost.
 

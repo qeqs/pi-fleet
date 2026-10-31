@@ -471,7 +471,7 @@ describe("createPoller", () => {
     expect(wakes).toHaveLength(0); // old message skipped
   });
 
-  it("resets offset on generation change (rotation)", () => {
+  it("reads what was still unread when the bus rotated", () => {
     const wakes: string[] = [];
     const poller = createPoller({ hub, name: "bob", isBusy: () => false, wake: (t) => wakes.push(t), pollMs: 60000 });
     poller.seekToEnd();
@@ -480,7 +480,31 @@ describe("createPoller", () => {
     hub.appendMessage({ from: "alice", to: "group", kind: "chat", text: "after rotation" });
     poller.tick();
     expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toContain("pad 0");
     expect(wakes[0]).toContain("after rotation");
+  });
+
+  it("follows the supervisor's position, so nothing falls between them if it dies", () => {
+    let attached = true;
+    const wakes: string[] = [];
+    const poller = createPoller({ hub, name: "bob", isBusy: () => false, wake: (t) => wakes.push(t), pollMs: 60000, supervisorAlive: () => attached });
+    hub.appendMessage({ from: "alice", to: "bob", kind: "chat", text: "handled by the supervisor" });
+    hub.writeCursor(hub.busEnd());
+    poller.tick();
+    hub.appendMessage({ from: "alice", to: "bob", kind: "chat", text: "posted as it died" });
+    attached = false;
+    poller.tick();
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toContain("posted as it died");
+    expect(wakes[0]).not.toContain("handled by the supervisor");
+  });
+
+  it("records how far it got alone, for the next supervisor", () => {
+    hub.updateAgent("bob", { name: "bob", pid: 1, cwd: ".", status: "idle" });
+    const poller = createPoller({ hub, name: "bob", isBusy: () => false, wake: () => {}, pollMs: 60000 });
+    hub.appendMessage({ from: "alice", to: "bob", kind: "chat", text: "hi" });
+    poller.tick();
+    expect(hub.readAgents().bob.handled).toEqual(hub.busEnd());
   });
 
   it("does NOT self-wake while the supervisor is attached (supervisor pushes instead)", () => {

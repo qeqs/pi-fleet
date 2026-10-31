@@ -80,6 +80,15 @@ function startFleet(name: string, args: string[], extraEnv: NodeJS.ProcessEnv = 
   return { proc, hub: new Hub(hubDir) };
 }
 
+/** Ask an agent something and wait for the model to have been asked and the run to end. */
+async function exchange(hub: Hub, agent: string, text: string): Promise<LlmRequest> {
+  hub.appendMessage({ from: "user", to: agent, kind: "chat", text });
+  const asked = await until(`${agent} to be asked`, async () => (await llmLog()).find((r) => r.agent === agent && r.last.includes(text)));
+  await sleep(300);
+  await idle(hub, [agent]);
+  return asked;
+}
+
 async function idle(hub: Hub, names: string[]): Promise<void> {
   await until(`${names.join(", ")} idle`, () => {
     const agents = hub.readAgents();
@@ -183,7 +192,7 @@ describe("fleet end to end", () => {
       return convo.find((c) => c.includes("first while busy") && c.includes("second while busy"));
     });
     expect(seen).toBeTruthy();
-    expect(hub.tailMessages(50).some((m) => m.text.includes("not delivered"))).toBe(false);
+    expect(hub.tailMessages(50).some((m) => m.kind === "system" && /deliver|not running/.test(m.text))).toBe(false);
   }, 60000);
 
   it("reports a message for an agent that is not running", async () => {
@@ -191,7 +200,7 @@ describe("fleet end to end", () => {
     await idle(hub, ["alice"]);
     hub.updateAgent("ghost", { name: "ghost", pid: 0, cwd: tmp, status: "stopped" });
     hub.appendMessage({ from: "user", to: "ghost", kind: "chat", text: "anyone home?" });
-    await until("the failed delivery notice", () => hub.tailMessages(50).find((m) => m.kind === "system" && m.text.includes(`"ghost" was not delivered`)));
+    await until("the waiting notice", () => hub.tailMessages(50).find((m) => m.kind === "system" && m.text.includes(`"ghost" is not running`)));
   }, 60000);
 
   it("keeps channels working after the supervisor detaches", async () => {
@@ -206,7 +215,7 @@ describe("fleet end to end", () => {
   }, 60000);
 
   it("marks a crashed agent stopped, says so, and hands its channel to another router", async () => {
-    const { hub } = startFleet("crash", ["serve", "--agent", "alice", "--agent", "bob"]);
+    const { hub } = startFleet("crash", ["serve", "--agent", "alice", "--agent", "bob", "--no-restart"]);
     await idle(hub, ["alice", "bob"]);
     expect(hub.getChannel("group")?.supervisor).toBe("alice");
     killTree(hub.readAgents().alice.pid);
@@ -217,6 +226,91 @@ describe("fleet end to end", () => {
 
     hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "still there? route=bob" });
     await until("the new router to take the message", async () => (await llmLog()).find((r) => r.agent === "bob" && r.last.includes("Routing task for #group")));
+  }, 60000);
+
+  it("brings a crashed agent back with its conversation", async () => {
+    const { hub } = startFleet("revive", ["serve", "--agent", "alice"]);
+    await idle(hub, ["alice"]);
+    await exchange(hub, "alice", "remember the word CHERRY");
+    const crashed = hub.readAgents().alice.pid;
+    killTree(crashed);
+
+    await until("the restart notice", () => hub.tailMessages(20).find((m) => m.text.includes('restarting agent "alice"')));
+    await until("alice to be back", () => hub.readAgents().alice.pid !== crashed && hub.readAgents().alice.status === "idle");
+    const after = await exchange(hub, "alice", "still with me?");
+    expect(after.conversation).toContain("CHERRY");
+  }, 60000);
+
+  it("/restart keeps the agent's conversation", async () => {
+    const { proc, hub } = startFleet("restart", ["up", "--agent", "alice"]);
+    await idle(hub, ["alice"]);
+    await exchange(hub, "alice", "remember the word BANANA");
+    const restarted = firstMatch(proc, /↻ \[alice\] restarted/);
+    proc.stdin!.write("/restart alice\n");
+    await restarted;
+    await idle(hub, ["alice"]);
+    const after = await exchange(hub, "alice", "what was the word?");
+    expect(after.conversation).toContain("BANANA");
+  }, 60000);
+
+  it("--fresh starts a new conversation", async () => {
+    const first = startFleet("fresh", ["up", "--agent", "alice"]);
+    await idle(first.hub, ["alice"]);
+    await exchange(first.hub, "alice", "remember the word MANGO");
+    killTree(first.proc.pid);
+    killTree(first.hub.readAgents().alice.pid);
+    const second = startFleet("fresh", ["up", "--agent", "alice", "--fresh"]);
+    await until("the fresh agent", () => second.hub.readAgents().alice.status === "idle" && !second.hub.otherSupervisor(0));
+    await idle(second.hub, ["alice"]);
+    const after = await exchange(second.hub, "alice", "what was the word again?");
+    expect(after.conversation).not.toContain("MANGO");
+  }, 60000);
+
+  it("holds a message for a stopped agent and delivers it when the agent returns", async () => {
+    const { proc, hub } = startFleet("hold", ["up", "--agent", "alice", "--agent", "bob"]);
+    await idle(hub, ["alice", "bob"]);
+    proc.stdin!.write("/stop alice\n");
+    await until("alice to stop", () => hub.readAgents().alice.status === "stopped");
+    hub.appendMessage({ from: "bob", to: "alice", kind: "chat", text: "for when you are back" });
+    await until("the waiting notice", () => hub.tailMessages(20).find((m) => m.text.includes('"alice" is not running')));
+    proc.stdin!.write("/restart alice\n");
+    await until("the message to arrive", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("for when you are back")));
+  }, 60000);
+
+  it("resumes the task after every process is killed, and loses no message", async () => {
+    const first = startFleet("killall", ["up", "--agent", "alice", "--agent", "bob"]);
+    await idle(first.hub, ["alice", "bob"]);
+    await exchange(first.hub, "alice", "remember the word DATE");
+
+    first.hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[slow 4]] the long job" });
+    await until("alice busy", () => first.hub.readAgents().alice.status === "busy");
+    await sleep(1000);
+    const { alice, bob } = first.hub.readAgents();
+    for (const pid of [first.proc.pid, alice.pid, bob.pid]) killTree(pid);
+    await until("alice's bridge to go", async () => !(await bridgeListening(alice.pipeIn!)));
+
+    first.hub.appendMessage({ from: "bob", to: "alice", kind: "chat", text: "sent while everything was down" });
+    startFleet("killall", ["up", "--agent", "alice", "--agent", "bob"]);
+
+    const resumed = await until("the interrupted job to resume", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("You were restarted") && r.last.includes("the long job")));
+    expect(resumed.conversation).toContain("DATE");
+    await until("the message from while it was down", async () => (await llmLog()).find((r) => r.agent === "alice" && r.conversation.includes("sent while everything was down")));
+  }, 90000);
+
+  it("a clean stop does not resume work by itself", async () => {
+    const first = startFleet("cleanstop", ["up", "--agent", "alice"]);
+    await idle(first.hub, ["alice"]);
+    first.hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[slow 8]] abandoned job" });
+    await until("alice busy", () => first.hub.readAgents().alice.status === "busy");
+    first.proc.stdin!.write("/quit\n");
+    await new Promise((resolve) => first.proc.on("exit", resolve));
+    const seen = (await llmLog()).filter((r) => r.agent === "alice" && r.last.includes("abandoned job")).length;
+
+    const second = startFleet("cleanstop", ["up", "--agent", "alice"]);
+    await firstMatch(second.proc, /spawned/);
+    await idle(second.hub, ["alice"]);
+    await expectQuiet();
+    expect((await llmLog()).filter((r) => r.agent === "alice" && r.last.includes("abandoned job"))).toHaveLength(seen);
   }, 60000);
 
   it("refuses a second supervisor on the same hub", async () => {
@@ -354,8 +448,8 @@ describe("fleet end to end", () => {
     expect(alice).not.toContain("queued behind the job");
     expect(alice).not.toContain("held by the pause");
 
-    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "carry on" });
-    await until("the human to get through", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("carry on")));
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "resume with the plan" });
+    await until("the human to get through", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("resume with the plan")));
     expect(hub.pausedReason()).toBeNull();
 
     // what Stop all dropped must not come back with the next run

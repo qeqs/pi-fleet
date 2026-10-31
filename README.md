@@ -88,6 +88,12 @@ fleet> # refactor the parser and add tests
   the wait for the model is timed, not tools). Only one supervisor can attach to a hub.
 - **Message limits**: a message is refused, never cut, above `MAX_MESSAGE_LEN` chars (default
   2000, override with `PI_FLEET_MAX_MSG`): you see the reason, and an agent is told to split it.
+- **Surviving restarts**: agents keep their conversation across a restart (`--fresh` starts new
+  ones). A wake is written to a per-agent inbox before it is sent and cleared once the agent
+  settles, and the supervisor saves its place on the bus, so a crash at any point loses no
+  message: one posted to a stopped agent waits for it, and work cut off by a crash is resumed
+  with a note saying so. Work you stopped yourself is not resumed. Crashed agents restart up to
+  3 times in 10 minutes (`--no-restart` turns this off), and `/restart name` does it by hand.
 - **Detached mode + auto-resume**: `--detach` keeps agents running when you `/quit`
   (the bridges survive). Re-running `fleet up` **auto-resumes** — it re-attaches to any
   bridge still alive (registry pid alive + pipes present) instead of re-spawning, so
@@ -154,6 +160,7 @@ Group chat input:
 | `/channel` | list channels; `/channel add <name> <m1,m2> [sup]`; `/channel rm <name>` |
 | `/new name [cwd] [model]` | spawn an agent |
 | `/stop name` | stop an agent |
+| `/restart name` | restart an agent; it keeps its conversation |
 | `/stopall` | abort every run and pause the fleet until your next message |
 | `/help` | list these commands |
 | `/quit` | stop all, exit |
@@ -346,6 +353,9 @@ src/supervisor.ts      fleet up/serve: spawns agents, tails the bus, GUI, termin
 src/spawn.ts           starting agents: lean detection, bridges, process-tree kill
 src/wakes.ts           who a batch of bus messages wakes, and with what text
 src/commands.ts        one-shot commands (list/stop/log/init/config/templates/rename)
+src/chat.ts            the terminal chat's input language
+src/doctor.ts          fleet doctor: checks a setup
+src/restart.ts         when to bring a crashed agent back
 src/rpc.ts             pi RPC client (JSONL) — direct child + named-pipe bridge client
 src/bridge.ts          detached bridge process owning a pi child over named pipes
 src/hub.ts             file-based message bus + agent registry (+ rotation, stats, heartbeat)

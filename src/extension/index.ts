@@ -307,8 +307,7 @@ export interface Poller {
  * from the extension so it can be unit-tested without a live pi session.
  */
 export function createPoller(deps: PollerDeps): Poller {
-  let lastOffset = 0;
-  let myGen = deps.hub.generation();
+  let cursor = deps.hub.busEnd();
   let pending = "";
   let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -322,23 +321,21 @@ export function createPoller(deps: PollerDeps): Poller {
 
   function tick() {
     try {
-      const gen = deps.hub.generation();
-      if (gen !== myGen) {
-        // bus was rotated — reset our read offset to the start of the new file
-        lastOffset = 0;
-        myGen = gen;
+      if (deps.supervisorAlive?.()) {
+        // It wakes everyone. Keep to its position, so nothing falls between us if it dies.
+        cursor = deps.hub.readCursor() ?? cursor;
+        return;
       }
-      const { messages, nextOffset } = deps.hub.readMessagesSince(lastOffset);
-      lastOffset = nextOffset;
+      const { messages, next } = deps.hub.readBus(cursor);
+      cursor = next;
       if (messages.length > 0) {
         const lookup = buildLookup(deps.hub);
         const channels = deps.hub.readChannels();
         const agents = Object.values(deps.hub.readAgents());
-        const attached = deps.supervisorAlive?.() ?? false;
         const relevant: FleetMessage[] = [];
         let routeText = "";
         for (const m of messages) {
-          if (!attached && !admitMessage(m, deps.hub, deps.maxHops ?? 0)) continue;
+          if (!admitMessage(m, deps.hub, deps.maxHops ?? 0)) continue;
           if (m.from === deps.name || m.kind !== "chat") continue;
           const d = wakeDecision(m, deps.name, lookup, channels);
           if (!d.wake) continue;
@@ -352,20 +349,13 @@ export function createPoller(deps: PollerDeps): Poller {
         if (relevant.length > 0 || routeText) {
           const inbox = relevant.length > 0 ? formatInbox(relevant, lookup, channels) : "";
           const combined = routeText && inbox ? `${routeText}\n\n${inbox}` : routeText || inbox;
-          if (attached) {
-            // supervisor is attached and will push this wake directly — don't
-            // self-wake (the offset already advanced above, so no double-wake).
-          } else if (deps.isBusy()) {
+          if (deps.isBusy()) {
             pending = pending ? `${pending}\n\n${combined}` : combined;
           } else {
             deps.wake(combined);
           }
         }
-      }
-      try {
-        deps.hub.updateAgent(deps.name, { lastReadOffset: nextOffset });
-      } catch {
-        // ignore
+        deps.hub.updateAgent(deps.name, { handled: cursor });
       }
     } catch {
       // ignore poll errors
@@ -385,8 +375,7 @@ export function createPoller(deps: PollerDeps): Poller {
   // Skip everything already on the bus (e.g. an agent re-joining an existing
   // fleet) so it only wakes on messages posted after it joined.
   function seekToEnd() {
-    lastOffset = deps.hub.messagesSize();
-    myGen = deps.hub.generation();
+    cursor = deps.hub.busEnd();
   }
 
   return { tick, start, stop, flushPending, seekToEnd };
@@ -442,6 +431,7 @@ export default function (pi: ExtensionAPI) {
       status: "idle",
       startedAt: Date.now(),
       lastReadOffset: hub.messagesSize(),
+      sessionFile: ctx.sessionManager.getSessionFile(),
     });
     hub.appendMessage({
       from: "system",

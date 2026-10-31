@@ -75,6 +75,84 @@ describe("pause and hop count", () => {
   });
 });
 
+describe("readBus", () => {
+  const say = (text: string) => hub.appendMessage({ from: "a", to: "group", kind: "chat", text });
+  const texts = (r: { messages: { text: string }[] }) => r.messages.map((m) => m.text);
+
+  it("reads from a cursor to the end, and the next cursor is the end", () => {
+    say("one");
+    const mid = hub.busEnd();
+    say("two");
+    const r = hub.readBus(mid);
+    expect(texts(r)).toEqual(["two"]);
+    expect(r.next).toEqual(hub.busEnd());
+  });
+
+  it("follows a cursor through a rotation without losing what was unread", () => {
+    say("read already");
+    const mid = hub.busEnd();
+    say("unread when it rotated");
+    expect(hub.rotateIfLarge(1)).toBe(true);
+    say("after the rotation");
+    const r = hub.readBus(mid);
+    expect(texts(r)).toEqual(["unread when it rotated", "after the rotation"]);
+    expect(r.next).toEqual(hub.busEnd());
+  });
+
+  it("follows a cursor through several rotations, in order", () => {
+    const start = hub.busEnd();
+    for (const text of ["first", "second", "third"]) {
+      say(text);
+      hub.rotateIfLarge(1);
+    }
+    say("last");
+    expect(texts(hub.readBus(start))).toEqual(["first", "second", "third", "last"]);
+  });
+
+  it("keeps a message written right after a rotation", () => {
+    say("old");
+    hub.rotateIfLarge(1);
+    say("new");
+    expect(hub.tailMessages(5).map((m) => m.text)).toEqual(["new"]);
+  });
+});
+
+describe("cursor", () => {
+  it("is absent until written, then survives a new Hub", () => {
+    expect(hub.readCursor()).toBeNull();
+    hub.writeCursor({ gen: 2, offset: 40 });
+    expect(new Hub(dir).readCursor()).toEqual({ gen: 2, offset: 40 });
+  });
+});
+
+describe("inbox", () => {
+  it("keeps wakes in order, on disk", () => {
+    hub.enqueueWake("bob", "first");
+    hub.enqueueWake("bob", "second");
+    expect(new Hub(dir).readInbox("bob").map((e) => e.text)).toEqual(["first", "second"]);
+  });
+
+  it("keeps a delivered wake until the agent settles", () => {
+    const a = hub.enqueueWake("bob", "accepted");
+    hub.enqueueWake("bob", "not yet");
+    hub.markDelivered("bob", a.id);
+    expect(hub.readInbox("bob").map((e) => e.delivered)).toEqual([true, false]);
+    hub.ackDelivered("bob");
+    expect(hub.readInbox("bob").map((e) => e.text)).toEqual(["not yet"]);
+  });
+
+  it("keeps each agent's inbox separate", () => {
+    hub.enqueueWake("bob", "for bob");
+    expect(hub.readInbox("alice")).toEqual([]);
+  });
+
+  it("can be cleared", () => {
+    hub.enqueueWake("bob", "dropped");
+    hub.clearInbox("bob");
+    expect(hub.readInbox("bob")).toEqual([]);
+  });
+});
+
 describe("GUI token", () => {
   it("creates one token and keeps it across hub instances", () => {
     const token = hub.guiToken();

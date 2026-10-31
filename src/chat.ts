@@ -20,6 +20,7 @@ const COMMANDS: Record<string, string | undefined> = {
   exit: undefined,
   new: "/new name [cwd] [model] [role]",
   stop: "/stop name",
+  restart: "/restart name",
 };
 
 export const CHAT_HELP = `  # text          post to the group
@@ -31,6 +32,7 @@ export const CHAT_HELP = `  # text          post to the group
   /channel        list channels; /channel add <name> <m1,m2> [sup]; /channel rm <name>
   /new name [cwd] [model] [role]   spawn an agent
   /stop name      stop an agent
+  /restart name   restart an agent; it keeps its conversation
   /stopall        abort every run and pause the fleet until your next message
   /quit           stop all and exit
   /help           this list`;

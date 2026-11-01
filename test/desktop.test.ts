@@ -288,6 +288,142 @@ describe.skipIf(!executable)("the desktop app", () => {
     expect(readProjects(projectsOf(userData))).toEqual([one]);
   }, 120000);
 
+  /** Hold back the supervisor's answer, as a slow machine does, until the file exists. */
+  function holdSupervisor(userData: string): { stub: string; answer: () => void } {
+    const release = path.join(userData, "answer-now");
+    const stub = path.join(userData, "hold.cjs");
+    fs.writeFileSync(stub, `const real = fetch; globalThis.fetch = async (...args) => { while (!require("fs").existsSync(${JSON.stringify(release)})) await new Promise((r) => setTimeout(r, 100)); return real(...args); };`);
+    return { stub, answer: () => fs.writeFileSync(release, "") };
+  }
+
+  const errorStub = (userData: string): { stub: string; shown: string } => {
+    const shown = path.join(userData, "shown.json");
+    const stub = path.join(userData, "errors.cjs");
+    fs.writeFileSync(stub, `require("electron").dialog.showErrorBox = (title, text) => require("fs").writeFileSync(${JSON.stringify(shown)}, JSON.stringify({ title, text }));`);
+    return { stub, shown };
+  };
+
+  const fileMenu = () =>
+    app!.evaluate(({ Menu }) => {
+      const items = Menu.getApplicationMenu()!.items.find((i) => i.label === "File")!.submenu!.items;
+      return { open: items.find((i) => i.label === "Open Project…")!.enabled, recent: items.find((i) => i.label === "Open Recent")!.enabled };
+    });
+
+  it.skipIf(!!installed)("shows its window at once, and says what it is waiting for", async () => {
+    const { userData, one, two } = folders("starting");
+    rememberProject(projectsOf(userData), two);
+    const { stub, answer } = holdSupervisor(userData);
+    const page = await launch(userData, { PI_FLEET_PROJECT: one }, ["-r", stub]);
+    await step("the starting page", page.locator("#starting").getByText("project-one").waitFor({ timeout: 0 }));
+    expect(await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true);
+    expect(await title()).not.toContain("project-one"); // that says it is ready
+
+    expect(await fileMenu()).toEqual({ open: false, recent: false });
+    await openRecent(two); // a second start now would kill the first
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    expect(fs.existsSync(path.join(two, ".pi-fleet"))).toBe(false);
+
+    answer();
+    await step("the fleet's page", page.waitForSelector("#conversation", { timeout: 0 }));
+    await until("the title", async () => (await title()).includes("project-one"), 60000);
+    expect(await fileMenu()).toEqual({ open: true, recent: true });
+  }, 120000);
+
+  it.skipIf(!!installed)("says which project is starting while it moves to another", async () => {
+    const { userData, one, two } = folders("starting-switch");
+    const { stub, answer } = holdSupervisor(userData);
+    rememberProject(projectsOf(userData), two);
+    fs.writeFileSync(path.join(userData, "answer-now"), ""); // the first project opens as usual
+    const page = await launch(userData, { PI_FLEET_PROJECT: one }, ["-r", stub]);
+    await step("the first project", page.waitForSelector("#conversation", { timeout: 0 }));
+    await until("the title", async () => (await title()).includes("project-one"), 60000);
+    fs.rmSync(path.join(userData, "answer-now"));
+    await openRecent(two);
+    await step("the starting page", page.locator("#starting").getByText("project-two").waitFor({ timeout: 0 }));
+    expect(await title()).not.toContain("project-one");
+    answer();
+    await step("the second project", page.waitForSelector("#conversation", { timeout: 0 }));
+    await until("the title", async () => (await title()).includes("project-two"), 60000);
+  }, 120000);
+
+  it.skipIf(!!installed)("can be closed while it starts, with no error and nothing left running", async () => {
+    const { userData, one } = folders("closed-while-starting");
+    const { stub: hold } = holdSupervisor(userData);
+    const { stub, shown } = errorStub(userData);
+    const page = await launch(userData, { PI_FLEET_PROJECT: one }, ["-r", stub, "-r", hold]);
+    await step("the starting page", page.locator("#starting").waitFor({ timeout: 0 }));
+    const fleet = new Hub(path.join(one, ".pi-fleet"));
+    await until("the supervisor", () => fleet.supervisorAlive(), 60000);
+    const pid = fleet.otherSupervisor()!;
+    const gone = new Promise((resolve) => app!.process().once("exit", resolve));
+    await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+    await step("the app to leave", gone, 30000);
+    app = undefined;
+    await until("the supervisor to go with it", () => !isPidAlive(pid), 15000);
+    expect(fs.existsSync(shown)).toBe(false);
+  }, 120000);
+
+  it.skipIf(!!installed)("starts no fleet once its window has closed, even if the app stays open", async () => {
+    const { userData, one } = folders("closed-first");
+    const stub = path.join(userData, "stays-open.cjs"); // as on a Mac, and with the proxy slow to answer
+    fs.writeFileSync(stub, `const { app, session } = require("electron"); app.quit = () => {}; app.whenReady().then(() => { session.defaultSession.forceReloadProxyConfig = () => new Promise((r) => setTimeout(r, 1500)); });`);
+    const { stub: errors, shown } = errorStub(userData);
+    const page = await launch(userData, { PI_FLEET_PROJECT: one }, ["-r", stub, "-r", errors]);
+    let desktopLog = "";
+    app!.process().stdout?.on("data", (d) => (desktopLog += d));
+    await step("the starting page", page.locator("#starting").waitFor({ timeout: 0 }));
+    await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    expect(desktopLog).not.toContain("[desktop] proxy:"); // the line before the supervisor starts
+    expect(fs.existsSync(shown)).toBe(false); // the person left: that is no failure
+    await app!.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {});
+    app = undefined;
+  }, 120000);
+
+  it.skipIf(!!installed)("closes the window when a project fails and there is none to go back to", async () => {
+    const { userData, one, two } = folders("nothing-behind");
+    fs.mkdirSync(path.join(two, ".pi-fleet"));
+    fs.writeFileSync(path.join(two, ".pi-fleet", "fleet.json"), "{ broken");
+    rememberProject(projectsOf(userData), two);
+    const { stub, shown } = errorStub(userData);
+    const stays = path.join(userData, "stays-open.cjs");
+    fs.writeFileSync(stays, `require("electron").app.quit = () => {};`);
+    const page = await launch(userData, { PI_FLEET_PROJECT: one }, ["-r", stub, "-r", stays]);
+    await step("the project", page.waitForSelector("#conversation", { timeout: 0 }));
+    await until("the title", async () => (await title()).includes("project-one"), 60000);
+    await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
+    await until("the fleet to stop", () => !new Hub(path.join(one, ".pi-fleet")).supervisorAlive(), 30000);
+    await openRecent(two);
+    await until("the error", () => fs.existsSync(shown), 60000);
+    await until("no window left", () => app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length === 0), 10000);
+    await app!.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {});
+    app = undefined;
+  }, 120000);
+
+  it.skipIf(!!installed)("gives up with a message when the way back fails too", async () => {
+    const { userData, one, two } = folders("no-way-back");
+    fs.mkdirSync(path.join(two, ".pi-fleet"));
+    fs.writeFileSync(path.join(two, ".pi-fleet", "fleet.json"), "{ broken");
+    rememberProject(projectsOf(userData), two);
+    const { stub, shown } = errorStub(userData);
+    await launch(userData, { PI_FLEET_PROJECT: one }, ["-r", stub]);
+    await until("the first project", async () => (await title()).includes("project-one"), 60000);
+    fs.writeFileSync(path.join(one, ".pi-fleet", "fleet.json"), "{ broken too");
+    await openRecent(two);
+    await until("the last word", () => fs.existsSync(shown) && JSON.parse(fs.readFileSync(shown, "utf8")).title.includes("could not start"), 60000);
+  }, 120000);
+
+  it.skipIf(!!installed)("says what went wrong when the first project cannot start", async () => {
+    const { userData, two } = folders("bad-start");
+    fs.mkdirSync(path.join(two, ".pi-fleet"));
+    fs.writeFileSync(path.join(two, ".pi-fleet", "fleet.json"), "{ broken");
+    rememberProject(projectsOf(userData), two);
+    const { stub, shown } = errorStub(userData);
+    await launch(userData, { PI_FLEET_PROJECT: two }, ["-r", stub]);
+    await until("the error", () => fs.existsSync(shown), 60000);
+    expect(JSON.parse(fs.readFileSync(shown, "utf8")).title).toContain("could not start");
+  }, 120000);
+
   it.skipIf(!!installed)("says what went wrong when a project cannot start", async () => {
     const { userData, one, two } = folders("bad-project");
     fs.mkdirSync(path.join(two, ".pi-fleet"));

@@ -31,9 +31,12 @@ let supervisorUp = false; // once it has served the page, losing it ends the app
 let supervisorOutput = "";
 let quitting = false;
 let mainWindow = null;
-let project = null;
+let project = null; // what the window shows, once it shows it
+let starting = false; // a second start now would kill the fleet on its way up
 
 const projectsFile = () => path.join(app.getPath("userData"), "projects.json");
+/** The person has left, so a start that fails now is no news to them. */
+const nobodyWaiting = () => quitting || !mainWindow;
 
 /** Find a free TCP port on localhost. */
 function findFreePort() {
@@ -75,6 +78,7 @@ async function systemProxy() {
 async function startSupervisor(dir) {
   const port = await findFreePort();
   const proxy = proxyEnv(process.env, await systemProxy());
+  if (nobodyWaiting()) throw new Error("the window was closed"); // or the fleet would outlive the app
   console.log(`[desktop] proxy: ${proxy.HTTPS_PROXY ?? "none"}`);
   supervisorOutput = "";
   supervisorUp = false;
@@ -105,9 +109,9 @@ async function startSupervisor(dir) {
 /** Stop the fleet and wait for it, since its agents stop with it. */
 function stopSupervisor() {
   const child = supervisor;
+  supervisor = null; // even if it has already gone: quitting waits for this to be empty
   if (!child || child.exitCode !== null) return Promise.resolve();
   const { pid } = child;
-  supervisor = null;
   const gone = new Promise((resolve) => {
     child.once("exit", resolve);
     setTimeout(resolve, STOP_WAIT_MS);
@@ -127,8 +131,8 @@ function buildMenu() {
   const file = {
     label: "File",
     submenu: [
-      { label: "Open Project…", accelerator: "CmdOrCtrl+O", click: () => chooseAndOpen() },
-      { label: "Open Recent", enabled: recent.length > 0, submenu: recent.map((dir) => ({ label: dir, click: () => switchTo(dir) })) },
+      { label: "Open Project…", accelerator: "CmdOrCtrl+O", enabled: !starting, click: () => chooseAndOpen() },
+      { label: "Open Recent", enabled: !starting && recent.length > 0, submenu: recent.map((dir) => ({ label: dir, click: () => switchTo(dir) })) },
       { type: "separator" },
       { role: process.platform === "darwin" ? "close" : "quit" },
     ],
@@ -166,32 +170,54 @@ async function chooseAndOpen() {
   if (dir) await switchTo(dir);
 }
 
-/** Start a project's fleet and show it. Whatever was open has already been stopped. */
+/** Stop whatever is open, then start a project's fleet and show it. The first start after an install can take 20 seconds, so the window comes first. */
 async function openProject(dir) {
-  const { url, exited } = await startSupervisor(dir);
-  await Promise.race([waitForHttp(url), exited]);
-  exited.catch(() => {}); // from here on, the exit handler above deals with it
-  supervisorUp = true;
-  project = dir;
-  rememberProject(projectsFile(), dir);
+  starting = true;
+  project = null;
   buildMenu();
   if (!mainWindow) createWindow();
-  await mainWindow.loadURL(url);
+  mainWindow.loadFile(path.join(__dirname, "starting.html"), { query: { project: dir } }).catch(() => {}); // the fleet's page can overtake it
+  try {
+    await stopSupervisor();
+    const { url, exited } = await startSupervisor(dir);
+    await Promise.race([waitForHttp(url), exited]);
+    exited.catch(() => {}); // from here on, the exit handler above deals with it
+    supervisorUp = true;
+    rememberProject(projectsFile(), dir);
+    await mainWindow.loadURL(url);
+    project = dir;
+    mainWindow.setTitle(titled(mainWindow.webContents.getTitle()));
+  } finally {
+    starting = false;
+    buildMenu();
+  }
+}
+
+/** Nothing is left to show, so all that remains is to say why. */
+function cannotStart(e) {
+  console.error("[desktop] failed to start:", e.message);
+  stopSupervisor();
+  if (nobodyWaiting()) return; // a page that was still loading fails as the app goes
+  dialog.showErrorBox("pi-fleet could not start", e.message);
+  app.quit();
 }
 
 async function switchTo(dir) {
-  if (dir === project || !(await trusted(dir))) return;
+  if (starting || dir === project || !(await trusted(dir))) return;
   const previous = project;
-  await stopSupervisor();
   try {
     await openProject(dir);
   } catch (e) {
     await stopSupervisor();
-    if (quitting) return;
+    if (nobodyWaiting()) return;
     dialog.showErrorBox(`pi-fleet could not open ${dir}`, e.message);
-    if (previous) await openProject(previous);
+    if (previous) await openProject(previous).catch(cannotStart);
+    else mainWindow.close();
   }
 }
+
+/** The page's title carries unread counts: keep those, and say which project this is. */
+const titled = (title) => (project ? `${title} — ${path.basename(project)}` : title);
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -201,10 +227,9 @@ function createWindow() {
     backgroundColor: "#0d1117",
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
-  // the page's title carries unread counts: keep those, and say which project this is
   mainWindow.on("page-title-updated", (e, title) => {
     e.preventDefault();
-    mainWindow.setTitle(`${title} — ${path.basename(project)}`);
+    mainWindow.setTitle(titled(title));
   });
   // open external links in the system browser, not new Electron windows
   const openOutside = (u) => {
@@ -243,13 +268,7 @@ app.whenReady().then(() => {
   if (!firstCopy) return;
   // the page asks for nothing but notifications
   session.defaultSession.setPermissionRequestHandler((_contents, permission, allow) => allow(permission === "notifications"));
-  launch().catch((e) => {
-    console.error("[desktop] failed to start:", e.message);
-    stopSupervisor();
-    if (quitting) return; // a page that was still loading fails as the app goes
-    dialog.showErrorBox("pi-fleet could not start", e.message);
-    app.quit();
-  });
+  launch().catch(cannotStart);
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) launch().catch(console.error);
   });

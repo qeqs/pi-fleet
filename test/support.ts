@@ -55,8 +55,12 @@ export function killTree(pid: number | undefined): void {
 /** A crash rather than a request to stop: nothing gets the chance to clean up. */
 export function crash(pid: number | null | undefined): void {
   if (!pid) return;
-  if (process.platform === "win32") killTree(pid);
-  else process.kill(pid, "SIGKILL");
+  if (process.platform === "win32") return killTree(pid);
+  try {
+    process.kill(-pid, "SIGKILL"); // a bridge leads its own group, with tsx and pi inside it
+  } catch {
+    process.kill(pid, "SIGKILL"); // the supervisor does not
+  }
 }
 
 /** A scripted model server, and a private home whose pi knows only that model. */

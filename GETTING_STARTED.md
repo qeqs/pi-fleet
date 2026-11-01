@@ -24,7 +24,7 @@ The installers are not code-signed, which is why these warnings appear.
 ### Command line
 
 ```bash
-npm install -g github:qeqs/pi-fleet#v1.0.0
+npm install -g github:qeqs/pi-fleet#v1.1.0
 ```
 
 This gives you the `fleet` command. Check it with:

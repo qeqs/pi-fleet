@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
 
 - Settings has a Models tab: add a server or an API key, test that a model answers, and choose the
   default and routing models.

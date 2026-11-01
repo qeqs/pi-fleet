@@ -7,6 +7,7 @@
 - A model is tested before a crew starts, and `fleet doctor` really asks it for a word.
 - A model chosen for an agent survives a restart.
 - The first-run screen lists every model to pick from, and follows the default chosen in Settings.
+  With several models and no default it asks, since the first could be paid or switched off.
 - The desktop app uses the computer's proxy settings, so hosted models work behind one.
 - Starting the desktop app a second time brings up the running one.
 - Agents wake each other less. A name in passing, such as "thanks @rev", wakes nobody: only the

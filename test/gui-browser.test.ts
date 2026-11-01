@@ -378,6 +378,18 @@ describe("setting up models", () => {
     expect(JSON.parse(fs.readFileSync(config, "utf8")).defaultModel).toBe(MODEL);
   }, 90000);
 
+  it("leaves the choice of a model to the person when there are several", async () => {
+    const { page, hubDir } = await open("first-run-choice", []);
+    await page.waitForSelector(".firstrun");
+    await page.waitForFunction(() => document.querySelectorAll("#firstModel option").length > 2);
+    expect(await page.inputValue("#firstModel")).toBe("");
+    await page.click('button[data-template="pair"]');
+    await page.locator("#firstError", { hasText: "Choose a model first" }).waitFor({ timeout: 10000 });
+    expect(fs.existsSync(path.join(hubDir, "fleet.json"))).toBe(false);
+    await page.selectOption("#firstModel", MODEL);
+    expect(await page.textContent("#firstError")).toBe("");
+  }, 60000);
+
   it("offers a saved default when the app comes back with no crew yet", async () => {
     const dir = path.join(model.tmp, "saved-default");
     fs.mkdirSync(dir, { recursive: true });

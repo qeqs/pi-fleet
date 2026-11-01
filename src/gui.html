@@ -576,10 +576,13 @@
 
   function renderFirstRun() {
     var html = '<div class="firstrun"><h2>Start your fleet</h2><p>Pick a crew. They start in this project\'s folder, and you can change them later in Settings.</p>';
-    var chosen = state.firstModel || state.defaultModel || state.models[0] || "";
+    // the first of several could be a paid model, or one that is switched off: that is the person's call
+    var chosen = state.firstModel || state.defaultModel || (state.models.length === 1 ? state.models[0] : "");
     var models = chosen && state.models.indexOf(chosen) < 0 ? [chosen].concat(state.models) : state.models;
     var options = models.map(function (m) { return '<option value="' + esc(m) + '"' + (m === chosen ? " selected" : "") + ">" + esc(m) + "</option>"; }).join("");
-    html += '<label for="firstModel">Model</label><select id="firstModel">' + (options || '<option value="">pi\'s default model</option>') + "</select>";
+    if (!models.length) options = '<option value="">pi\'s default model</option>';
+    else if (!chosen) options = '<option value="" selected>Choose a model…</option>' + options;
+    html += '<label for="firstModel">Model</label><select id="firstModel">' + options + "</select>";
     html += '<div class="stat" style="margin:4px 0 12px">Not listed? <button class="plain" data-open-models="1">Add one in Settings → Models</button></div>';
     state.templates.forEach(function (t) {
       html += '<div class="template"><b>' + esc(t.name) + '</b><span class="tdesc">' + esc(t.description) + '</span><button data-template="' + esc(t.name) + '">Start</button></div>';
@@ -637,6 +640,7 @@
   /** A crew on a model nobody can reach only ends in errors, so try it first. */
   function startCrew(template, untested) {
     var model = document.getElementById("firstModel").value.trim();
+    if (!model && state.models.length) return showFirstError("Choose a model first.");
     state.firstModel = model;
     var launch = function () {
       showFirstError("Starting…");

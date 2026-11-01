@@ -142,6 +142,7 @@ use `/diff impl1` and `/merge impl1` in the terminal. See [Parallel work](README
 | A `fail` from `fleet doctor` | Follow the message on that line. |
 | `pi does not know "provider/model"` | Finish step 2, and use the full `provider/id` name. |
 | `Model error: Connection error` | Nothing is answering at the model's address. Start its server, or test another in Settings → Models. |
+| A hosted model answers `403`, or cannot be reached | The desktop app uses your system proxy. On the command line, set `HTTPS_PROXY` yourself. |
 | The agents stay idle after a task | Check for a notice in `#group`, such as a pause or a model error. Send any message to lift a pause. |
 | `another supervisor is already running` | Another fleet is using this folder. Stop it, or pass `--dir` to use a separate one. |
 | Agents still running after you quit | `fleet list` shows them, and `fleet stop all` stops them. |

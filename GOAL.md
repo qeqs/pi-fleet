@@ -14,6 +14,24 @@ empty messages in the agents' chats.
 The rules of the 1.0 goal below still apply. New ideas go into **Next** in `ROADMAP.md`.
 
 ## Progress log
+- 2026-11-01: The installed app, walked through in its own windows on a real Windows machine.
+  From the first-run screen through a crew on hf-space-qwen38, a Russian task went planner,
+  implementer, reviewer, `APPROVE` in 168s with 3 messages and 264k tokens, and the crew's test
+  passed. With the model switched off mid-session, the chat said why in about 15s, and the agent's
+  chat showed one error block. Stop all, Usage, Timeline and quitting (no process left) all worked.
+  The run found what scripted models and CI had not: nothing in `fleet doctor` or a model test
+  noticed a refused prompt, the first-run screen could only offer the model already chosen and
+  picked the first on the list, even a paid or dead one, a crew started after choosing a default
+  was not kept, a second launch ran a second copy, and hosted models were out of reach behind a
+  system proxy. All fixed, with tests. The task text was sent with the call behind the Send
+  button, since the automation here can click that window but not type into it.
+  On OpenRouter, reached through the system proxy with the key only in the process environment,
+  a free model (`cohere/north-mini-code:free`) finished a loan calculator with a correct formula,
+  after one provider error that stopped the implementer and one message to carry on. It cost
+  546k tokens and left `APPROVE` in the reviewer's own chat instead of the group's, which is in
+  **Next**. A mutation check showed the hold on busy agents does not change what the model
+  receives, since pi's queue merges messages either way: what it changes is that held messages
+  stay undelivered, so a crash does not call them interrupted. The test now says so.
 - 2026-11-01: Group chat reworked. The same task, "a web app calculator for a credit percent", on
   hf-space-qwen38, one run each: 14 messages, 15 wakes, 56 model turns and 571k tokens before; 5
   messages, 3 wakes, 33 turns and 240k tokens after, and no stray files from `openspec init`

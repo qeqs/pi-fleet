@@ -159,6 +159,9 @@ the group chat had only ever run small tasks.
 
 Not scheduled yet.
 
+- [ ] A verdict or a final answer must reach the group: a weak model can leave `APPROVE` in its own chat, and the group just goes quiet
+- [ ] Filter the model lists by name, and make free models easy to find: an OpenRouter key adds about 400 rows
+- [ ] Show the desktop window at once: on Windows it takes about 20 seconds to appear, with nothing on screen until then
 - [ ] Find out which tools agents are missing: the built-in ones were enough in the real runs so far
 - [ ] Spend less on context: about 96% of the tokens in a real run were context sent again on each turn, so try prompt caching on providers that have it
 - [ ] Keep small jobs small: the planner still writes an OpenSpec proposal for a one-page app

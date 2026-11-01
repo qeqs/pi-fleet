@@ -12,12 +12,25 @@
 //   a merge conflict       -> merges the base into its branch, keeping its own side
 //   [[run command]]        -> runs a command, then says ok
 //   [[openspec args]]      -> runs the task board tool, then says ok
+//   [[say text]]           -> answers with that text and calls no tool, as a weak model does
+//   [[inspect text]]       -> runs a command, then answers with that text and calls no fleet tool
+//   the watching router    -> says the crew has finished, unless the task has [[stalled name]]: then
+//                             that member must write a file, or with [[stalled name hopeless]],
+//                             must do something it answers by only talking
+//   [[router-slow N]]      -> the router takes N seconds and gives no usable answer
+//   [[watcher-slow N]]     -> the watching router takes N seconds and gives no usable answer
+//   model "fake/no-tools"  -> a server that ignores tools: only ever writes text
+//   model "fake/tool-refused" -> refuses the tool test because it has no tools
+//   model "fake/cut-off"   -> fails the tool test for a reason that says nothing about tools
 //   [[md]]                 -> answers with markdown, some of it hostile
 //   [[tool-then-slow]]     -> calls a tool, then streams slowly
 //   [[hang]]               -> never answers
 //   [[fail]]               -> answers with an error that pi does not retry
 //   [[runon]]              -> never ends the run: every turn calls another tool
 //   [[repeat]]             -> never ends the run: every turn posts the same message
+//   [[chatter]]            -> never ends the run: every turn posts a slightly different message
+//   [[flaky N]]            -> anywhere in the conversation: this agent's first N requests fail
+//                             with a 503, then it answers as usual
 //   [[pingpong a b]]       -> a and b keep sending each other this same message
 //   no directive           -> SDLC defaults: planner mentions implementer, implementer
 //                             mentions reviewer, reviewer posts APPROVE to #group
@@ -36,6 +49,8 @@ const textOf = (m) =>
 function agentOf(messages) {
   const sys = textOf(messages.find((m) => m.role === "system" || m.role === "developer"));
   if (sys.startsWith("You route messages")) return "router";
+  if (sys.startsWith("You watch a team")) return "watcher";
+  if (sys.startsWith("You check that a model")) return "tool-test";
   return /You are "([^"]+)"/.exec(sys)?.[1] ?? "?";
 }
 
@@ -46,6 +61,12 @@ function routerReply(text) {
   const explicit = /route=([\w,-]+)/.exec(text)?.[1]?.split(",");
   const respond = explicit ?? (from === "user" ? [members.includes("planner") ? "planner" : members[0]] : []);
   return JSON.stringify({ respond, summary: `latest from ${from}` });
+}
+
+function watcherReply(text) {
+  const stalled = /\[\[stalled (\S+?)( hopeless)?\]\]/.exec(text);
+  if (!stalled) return JSON.stringify({ finished: true });
+  return JSON.stringify({ finished: false, next: stalled[1], say: stalled[2] ? "[[say I will get to it.]]" : "[[write nudged.txt done]]" });
 }
 
 const MARKDOWN = [
@@ -72,9 +93,23 @@ const MARKDOWN = [
 const say = (text) => ({ kind: "text", text });
 const tool = (name, args) => ({ kind: "tool", name, args });
 
-function decide(agent, messages) {
+const outages = new Map();
+
+function decide(agent, messages, model) {
   const last = messages.at(-1);
+  const slowly = /\[\[(router|watcher)-slow (\d+)\]\]/.exec(textOf(last));
+  if (slowly?.[1] === agent) return { kind: "slow", seconds: Number(slowly[2]) };
   if (agent === "router") return say(routerReply(textOf(last)));
+  if (agent === "watcher") return say(watcherReply(textOf(last)));
+  if (model === "no-tools") return say("I cannot open files, but I am sure it is fine.");
+  if (agent === "tool-test" && model === "tool-refused") return { kind: "fail", message: "No endpoints found that support tool use." };
+  if (agent === "tool-test" && model === "cut-off") return { kind: "fail", message: "Your daily allowance is used up." };
+  if (agent === "tool-test") return last.role === "tool" ? say(textOf(last)) : tool("read", { path: /on (.+), then reply/.exec(textOf(last))[1] });
+  const flaky = /\[\[flaky (\d+)\]\]/.exec(messages.map(textOf).join("\n"));
+  if (flaky && (outages.get(agent) ?? 0) < Number(flaky[1])) {
+    outages.set(agent, (outages.get(agent) ?? 0) + 1);
+    return { kind: "unavailable" };
+  }
   const lastUser = textOf([...messages].reverse().find((m) => m.role === "user"));
   if (lastUser.includes("[[write ") && last.role === "tool" && !textOf(last).startsWith("Mentioned")) return tool("fleet_mention", { agents: ["reviewer"], text: "Please review my change." });
   const conflict = /Merging your branch \S+ into (\S+) conflicts/.exec(lastUser);
@@ -82,6 +117,15 @@ function decide(agent, messages) {
   if (lastUser.includes("[[runon]]")) return tool("fleet_agents", {});
   if (lastUser.includes("[[tool-then-slow]]")) return last.role === "tool" ? { kind: "slow", seconds: 4 } : tool("fleet_agents", {});
   if (lastUser.includes("[[repeat]]")) return tool("fleet_send", { to: "group", text: "Already done." });
+  if (lastUser.includes("[[chatter]]")) return tool("fleet_send", { to: "group", text: `Done, checked ${messages.length} times.` });
+  const inspect = /\[\[inspect ([^\]]+)\]\]/.exec(lastUser);
+  if (inspect) return last.role === "tool" ? say(inspect[1]) : tool("bash", { command: "echo looked" });
+  // the way of a weak model: report first, and work only when told to
+  if (last.role === "tool" && textOf(last).startsWith("Not sent: you have not used a tool")) return tool("bash", { command: `echo ${agent} working` });
+  if (last.role === "tool" && textOf(last).trim() === `${agent} working`) {
+    const { name, arguments: sent } = messages.findLast((m) => m.tool_calls?.[0]?.function.name.startsWith("fleet_")).tool_calls[0].function;
+    return tool(name, JSON.parse(sent));
+  }
   if (last.role === "tool") return say(`ok (${agent})`);
   const user = textOf(last);
   const pong = /\[\[pingpong ([\w-]+) ([\w-]+)\]\]/.exec(user);
@@ -100,6 +144,8 @@ function decide(agent, messages) {
   if (run) return tool("bash", { command: run[1] });
   const write = /\[\[write (\S+) ([^\]]+)\]\]/.exec(user);
   if (write) return tool("write", { path: write[1], content: write[2] });
+  const saying = /\[\[say ([^\]]+)\]\]/.exec(user);
+  if (saying) return say(saying[1]);
   if (user.includes("[[md]]")) return say(MARKDOWN);
   if (user.includes("[[ask]]")) return tool("ask_human", {});
   if (user.includes("[[guarded]]")) return tool("fleet_agents", {});
@@ -118,9 +164,14 @@ const chunk = (delta, finish = null) =>
 
 async function stream(res, decision, promptTokens) {
   if (decision.kind === "hang") return;
+  if (decision.kind === "unavailable") {
+    res.writeHead(503, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "scripted outage", type: "server_error" } }));
+    return;
+  }
   if (decision.kind === "fail") {
     res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: { message: "scripted failure", type: "invalid_request_error" } }));
+    res.end(JSON.stringify({ error: { message: decision.message ?? "scripted failure", type: "invalid_request_error" } }));
     return;
   }
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
@@ -154,9 +205,9 @@ const server = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", async () => {
-    const messages = JSON.parse(body || "{}").messages ?? [];
+    const { messages = [], model } = JSON.parse(body || "{}");
     const agent = agentOf(messages);
-    const decision = decide(agent, messages);
+    const decision = decide(agent, messages, model);
     requests.push({
       agent,
       last: textOf(messages.at(-1)),

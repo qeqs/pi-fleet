@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { Hub } from "../src/hub.ts";
-import { DEAD_MODEL, FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
+import { DEAD_MODEL, FLEET, MODEL, NO_TOOLS_MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
 
 vi.setConfig({ testTimeout: 90000 });
 
@@ -29,9 +29,9 @@ async function launch(): Promise<Browser> {
 }
 
 /** Start a fleet and open its page the way a person does: from the link it prints. */
-async function open(name: string, args: string[]): Promise<{ page: Page; hub: Hub; hubDir: string; url: string }> {
+async function open(name: string, args: string[], env: NodeJS.ProcessEnv = model.env): Promise<{ page: Page; hub: Hub; hubDir: string; url: string }> {
   const hubDir = path.join(model.tmp, name);
-  const proc = spawn(process.execPath, [TSX, FLEET, "serve", ...args, "--dir", hubDir], { cwd: model.tmp, env: model.env, stdio: ["ignore", "pipe", "pipe"] });
+  const proc = spawn(process.execPath, [TSX, FLEET, "serve", ...args, "--dir", hubDir], { cwd: model.tmp, env, stdio: ["ignore", "pipe", "pipe"] });
   const [, url] = await firstMatch(proc, /GUI: (http:\/\/\S+)/);
   const page = await browser.newPage();
   running.push({ proc, hubDir, page });
@@ -335,7 +335,7 @@ describe("setting up models", () => {
     const row = page.locator('.mrow[data-model="added/fake-1"]');
     await row.waitFor({ timeout: 20000 });
     await row.locator('button[data-do="test"]').click();
-    await row.locator(".mres.good").getByText("Answers").waitFor({ timeout: 30000 });
+    await row.locator(".mres.good").getByText("Answers and uses tools").waitFor({ timeout: 30000 });
     await row.locator('button[data-do="default"]').click();
     await page.locator('.mrow[data-model="added/fake-1"] .tag').getByText("default").waitFor({ timeout: 20000 });
     expect(JSON.parse(fs.readFileSync(path.join(hubDir, "fleet.json"), "utf8")).defaultModel).toBe("added/fake-1");
@@ -348,6 +348,26 @@ describe("setting up models", () => {
     const row = page.locator(`.mrow[data-model="${DEAD_MODEL}"]`);
     await row.locator('button[data-do="test"]').click();
     await row.locator(".mres.bad").getByText("Connection error").waitFor({ timeout: 30000 });
+  }, 60000);
+
+  it("says when a model answers but does not use a tool", async () => {
+    const { page } = await open("test-no-tools", agentsFor("alice"));
+    await ready(page, "alice");
+    await openModels(page);
+    const row = page.locator(`.mrow[data-model="${NO_TOOLS_MODEL}"]`);
+    await row.locator('button[data-do="test"]').click();
+    await row.locator(".mres.bad").getByText("did not use a tool").waitFor({ timeout: 30000 });
+  }, 60000);
+
+  it("warns before a crew starts on a model that does not use tools", async () => {
+    const { page, hubDir } = await open("first-run-no-tools", []);
+    await page.waitForSelector(".firstrun");
+    await page.selectOption("#firstModel", NO_TOOLS_MODEL);
+    await page.click('button[data-template="pair"]');
+    await page.locator("#firstError", { hasText: "did not use a tool" }).waitFor({ timeout: 30000 });
+    expect(fs.existsSync(path.join(hubDir, "fleet.json"))).toBe(false);
+    await page.click('#firstError button[data-untested]');
+    await until("the crew", () => fs.existsSync(path.join(hubDir, "fleet.json")));
   }, 60000);
 
   it("offers every model on the first-run screen, and keeps a default chosen in Settings", async () => {
@@ -423,6 +443,110 @@ describe("setting up models", () => {
     await page.selectOption("#modelPick", DEAD_MODEL);
     const config = path.join(hubDir, "fleet.json"); // the crew may still be starting, and the file with it
     await until("the choice to be kept", () => fs.existsSync(config) && JSON.parse(fs.readFileSync(config, "utf8")).agents.find((a: { name: string }) => a.name === name).model === DEAD_MODEL);
+  }, 60000);
+});
+
+describe("a key that brings hundreds of models", () => {
+  const PAID = 400;
+  const FREE = ["cohere/north-mini-code:free", "vendor/other-model:free", "openrouter/free"];
+  const name = (id: string) => `many/${id}`;
+
+  /** A home of its own: the other tests here expect a short list. */
+  function manyModels(): NodeJS.ProcessEnv {
+    const agentDir = path.join(model.tmp, "many-models", ".pi", "agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    const ids = [...Array.from({ length: PAID }, (_, i) => `vendor/paid-${i}`), ...FREE];
+    const models = ids.map((id) => ({ id, contextWindow: 131072, maxTokens: 2048 }));
+    const providers = { many: { baseUrl: `http://127.0.0.1:${model.port}/v1`, apiKey: "many", api: "openai-completions", models } };
+    fs.writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers }));
+    return { ...model.env, PI_CODING_AGENT_DIR: agentDir };
+  }
+
+  const shownRows = (page: Page) => page.locator("#modelRows .mrow:visible").evaluateAll((rows) => rows.map((r) => r.getAttribute("data-model")));
+  const options = (page: Page) => page.locator("#firstModel option").evaluateAll((all) => all.map((o) => (o as HTMLOptionElement).value));
+
+  it("finds a model by name in Settings, and the forms stay within reach", async () => {
+    const { page } = await open("many-settings", [], manyModels());
+    await page.waitForSelector(".firstrun");
+    await page.click("#settingsBtn");
+    await page.click('#tabs button[data-tab="models"]');
+    await page.waitForSelector("#modelRows .mrow");
+    expect((await shownRows(page)).length).toBe(PAID + FREE.length);
+    const below = await page.evaluate(() => document.getElementById("provName")!.getBoundingClientRect().bottom - document.getElementById("mbody")!.getBoundingClientRect().bottom);
+    expect(below).toBeLessThan(0); // on screen with no scrolling at all
+
+    await page.fill("#modelFilter", "PAID-39");
+    expect(await shownRows(page)).toEqual([name("vendor/paid-39"), ...Array.from({ length: 10 }, (_, i) => name(`vendor/paid-39${i}`))]);
+    await page.locator("#modelCount").getByText(`11 of ${PAID + FREE.length}`).waitFor();
+
+    await page.fill("#modelFilter", "vendor paid-7 77");
+    expect(await shownRows(page)).toEqual([name("vendor/paid-77")]);
+
+    await page.fill("#modelFilter", "no such model");
+    expect(await shownRows(page)).toEqual([]);
+    await page.locator("#modelCount").getByText(`0 of ${PAID + FREE.length}`).waitFor();
+
+    await page.fill("#modelFilter", "");
+    await page.locator("#mbody label", { hasText: "Free only (3)" }).click();
+    expect(await shownRows(page)).toEqual(FREE.map(name));
+
+    await page.fill("#modelFilter", "cohere");
+    await page.click("#closeSettings");
+    expect(await page.inputValue("#firstFilter")).toBe("cohere"); // the same filter on the screen behind it
+    expect(await page.isChecked(".firstrun .mfree")).toBe(true);
+    expect(await options(page)).toEqual(["", name(FREE[0])]);
+
+    await page.click("#settingsBtn");
+    await page.click('#tabs button[data-tab="models"]');
+    const row = page.locator(`.mrow[data-model="${name(FREE[0])}"]`);
+    await row.locator('button[data-do="default"]').click();
+    await page.locator(`.mrow[data-model="${name(FREE[0])}"] .tag`).getByText("default").waitFor({ timeout: 20000 });
+    expect(await shownRows(page)).toEqual([name(FREE[0])]); // the tab reloaded, and the filter stayed
+  }, 60000);
+
+  it("narrows the first-run list by name, and never changes the choice", async () => {
+    const { page, hub } = await open("many-first-run", [], manyModels());
+    await page.waitForSelector("#firstFilter");
+    expect((await options(page)).length).toBe(PAID + FREE.length + 1); // and "Choose a model…"
+
+    await page.locator(".firstrun label", { hasText: "Free only (3)" }).click();
+    expect(await options(page)).toEqual(["", ...FREE.map(name)]);
+    await page.selectOption("#firstModel", name(FREE[1]));
+
+    await page.fill("#firstFilter", "cohere");
+    expect(await options(page)).toEqual([name(FREE[0]), name(FREE[1])]);
+    expect(await page.inputValue("#firstModel")).toBe(name(FREE[1]));
+
+    await page.focus("#firstFilter");
+    await page.keyboard.type("/north");
+    hub.appendMessage({ from: "system", to: "group", kind: "system", text: "the page redraws" });
+    await page.waitForFunction(() => document.querySelector(".firstrun") && document.activeElement?.id === "firstFilter");
+    await page.waitForTimeout(1000); // the tailer's next round
+    await page.keyboard.type("-mini");
+    expect(await page.inputValue("#firstFilter")).toBe("cohere/north-mini");
+    expect(await options(page)).toEqual([name(FREE[0]), name(FREE[1])]);
+
+    await page.fill("#firstFilter", "nothing at all");
+    await page.selectOption("#firstModel", name(FREE[1]));
+    expect(await options(page)).toEqual([name(FREE[1])]);
+  }, 60000);
+
+  it("says so when nothing matches and no model is chosen", async () => {
+    const { page } = await open("many-no-match", [], manyModels());
+    await page.waitForSelector("#firstFilter");
+    await page.fill("#firstFilter", "nothing at all");
+    expect(await page.locator("#firstModel option").allTextContents()).toEqual(["No model matches"]);
+    await page.click('button[data-template="pair"]');
+    await page.locator("#firstError", { hasText: "Choose a model first" }).waitFor({ timeout: 10000 });
+  }, 60000);
+
+  it("shows no filter for a short list", async () => {
+    const { page } = await open("few-models", agentsFor("alice"));
+    await ready(page, "alice");
+    await page.click("#settingsBtn");
+    await page.click('#tabs button[data-tab="models"]');
+    await page.waitForSelector("#modelRows .mrow");
+    expect(await page.locator("#modelFilter").count()).toBe(0);
   }, 60000);
 });
 

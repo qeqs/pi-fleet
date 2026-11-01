@@ -15,11 +15,11 @@
  *  - inbox polling: new messages addressed to this agent (or the group)
  *    are injected as a user message when the agent is idle
  */
-import { Type } from "@earendil-works/pi-ai";
+import { isRetryableAssistantError, Type, type AssistantMessage } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { onPath } from "../programs.ts";
-import { Hub, shortId, messageTooLong, addressLabel, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type FleetMessage, type ChannelConfig, addressedAgents, mentionedAgents } from "../hub.ts";
+import { Hub, shortId, messageTooLong, addressLabel, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, MAX_MESSAGE_LEN, type AgentInfo, type FleetMessage, type ChannelConfig, addressedAgents, mentionedAgents } from "../hub.ts";
 import { packageBinArgv } from "../rpc.ts";
 
 const POLL_MS = Number(process.env.PI_FLEET_POLL_MS ?? 3000);
@@ -34,6 +34,33 @@ const STALL_MS = Number(process.env.PI_FLEET_STALL_MS ?? 5 * 60 * 1000);
  */
 const REPEAT_LIMIT = 3;
 const FLEET_TOOLS = new Set(["fleet_send", "fleet_mention", "route"]);
+
+/**
+ * Messages a run may send with nothing new coming in. A report too long for one message
+ * still fits, at 12,000 characters. A model talking to itself does not: one real run went
+ * round 11 times after its handoff, with each text a little different, for 606k tokens.
+ */
+const SEND_LIMIT = 6;
+
+/** Refused sends before the run is stopped: a model that ignores them would go on to the turn limit. */
+const REFUSED_SEND_LIMIT = 2;
+
+/**
+ * The waits before each of the fleet's own tries after a run ends in a model error, in ms
+ * (PI_FLEET_RETRY_WAITS). pi's retries are over in seconds, which does not outlast a server
+ * that is down for a minute, and then the chain would wait for a person.
+ */
+const RETRY_WAITS = "30000,120000,300000";
+
+/** Tools that only talk, plan or look something up: a run with nothing else in it did no work. */
+const TALK_TOOLS = new Set([...FLEET_TOOLS, "fleet_inbox", "fleet_agents", "openspec", "beads"]);
+const LOOK_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
+/** Whether a tool call is work for this role: reading is most of a review, but an implementer has to change something. */
+export function countsAsWork(tool: string, role: string | undefined): boolean {
+  if (TALK_TOOLS.has(tool)) return false;
+  return role !== "implementer" || !LOOK_TOOLS.has(tool);
+}
 
 /** Tools this agent may only run once a person agrees (PI_FLEET_APPROVE, comma-separated). */
 export const APPROVE_TOOLS = new Set((process.env.PI_FLEET_APPROVE ?? "").split(",").map((t) => t.trim()).filter(Boolean));
@@ -90,7 +117,8 @@ Your role: PLANNER.
       return `
 
 Your role: IMPLEMENTER.
-- Implement the tasks assigned to you. Follow the quality gate: ${validate} before marking a task done.
+- Implement the tasks assigned to you yourself, in this run: write the files with your tools and run them. Do not announce the work, ask to start or pass it on.
+- Follow the quality gate: ${validate} before marking a task done.
 - When everything assigned to you is done, @mention the reviewer once, with a summary of what changed and where.`;
     case "reviewer":
       return `
@@ -127,6 +155,7 @@ export function fleetPrompt(name: string, lean: boolean, roster: string, role?: 
     return `You are "${name}", an agent in a multi-agent fleet with a shared message bus.
 Fleet (you are "${name}"): ${roster}
 - You are woken when messages arrive (@mentions of you, or a routing supervisor directs one to you).
+- Messages do no work: only your tools do (read, write, edit, bash). Never say you will do something: do it in this run, then report what you did.
 - Reply with fleet_send: to="group" or to a channel name, or to="<agent>". Keep it short.
 - Hand work to an agent with fleet_mention, or start your message with their @name. A name later in a message wakes nobody.
 - Send a message only to hand off work, ask something that blocks you, or report a finished result. Never just acknowledge: if a message asks nothing of you, end your turn.
@@ -142,6 +171,7 @@ ${roster}
 
 Fleet rules:
 - You are woken automatically when new messages arrive. Check them with fleet_inbox if you need history.
+- Messages do no work: only your tools do (read, write, edit, bash). Never say you will do something: do it in this run, then report what you did.
 - Reply with fleet_send: to="group" or a channel name for a shared channel, to="<agent name>" for a direct message. Keep messages concise and actionable.
 - In a supervised channel, a supervisor routes work to you; when you finish, send your result back to that channel.
 - To hand work to an agent, use fleet_mention, or start your message with their @name. A name later in a message wakes nobody.
@@ -289,7 +319,7 @@ export function directedMessageText(channel: ChannelConfig, m: FleetMessage, sum
   if (summary && summary.trim() && summary.trim() !== "(no summary yet)") {
     parts.push(`Channel summary: ${summary.trim()}`);
   }
-  parts.push(`Respond with fleet_send to "${channel.name}" if a reply is needed.`);
+  parts.push(`If this is work for you, do it now with your tools: a message does no work. Then respond with fleet_send to "${channel.name}" if a reply is needed.`);
   return parts.join("\n");
 }
 
@@ -304,8 +334,44 @@ export function formatInbox(messages: FleetMessage[], lookup: Map<string, FleetM
   return (
     `New fleet messages for you:\n${lines.join("\n")}\n\n` +
     `Reply with fleet_send (to="group" or to a specific agent) only if this needs something from you. ` +
-    `To reply to a specific message, pass its id (in parentheses) as replyTo.`
+    `To reply to a specific message, pass its id (in parentheses) as replyTo. ` +
+    `If this asks you to do something, do that first, now, with your tools: a message does no work.`
   );
+}
+
+/**
+ * The channel message a wake came from, going by the messages it carries, last one first.
+ * The router hands a member its work as a DM, so that DM counts by the message it replies to.
+ */
+export function wakeOrigin(text: string, hub: Hub): FleetMessage | undefined {
+  const lookup = buildLookup(hub);
+  const carried = [...text.matchAll(/^\((\S+)\) \[/gm)].map(([, id]) => lookup.get(id));
+  for (const m of carried.reverse()) {
+    const origin = [m, m?.replyTo ? lookup.get(m.replyTo) : undefined].find((o) => o && hub.targetKind(o.to) === "channel");
+    if (origin) return origin;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a model error may be gone in a few minutes. pi knows the transient ones, except
+ * what OpenRouter reports when a free model's provider fails. A bad key or an unknown model
+ * stays that way, even when a gateway words it as a provider error, and a limit per day
+ * outlasts every wait here.
+ */
+export function waitingHelps(error: string): boolean {
+  if (/(?<![a-z0-9])(?:401|403|404)(?![a-z0-9])|per[- ]day|daily/i.test(error)) return false;
+  return /finish_reason: error/i.test(error) || isRetryableAssistantError({ stopReason: "error", errorMessage: error } as AssistantMessage);
+}
+
+const VERDICT = /^[\s*_#>`]*(APPROVE|REQUEST CHANGES)\b[*_`]*/;
+
+/** A final text that is a verdict, in the form the routing rules read, or null if it is anything else. */
+export function verdictMessage(text: string, name: string): string | null {
+  if (!VERDICT.test(text)) return null;
+  const verdict = text.replace(VERDICT, "$1").trim();
+  const rest = ` … (the rest is in ${name}'s chat)`;
+  return messageTooLong(verdict) ? verdict.slice(0, MAX_MESSAGE_LEN - rest.length) + rest : verdict;
 }
 
 export interface PollerDeps {
@@ -429,6 +495,17 @@ export default function (pi: ExtensionAPI) {
   const fleetCalls = new Map<string, number>(); // how often this run made each exact fleet call
   let stallTimer: ReturnType<typeof setTimeout> | undefined;
   let modelError: string | undefined;
+  // What a run needs for its verdict to reach the group. Kept until it settles, past pi's retries.
+  let wokenIn: FleetMessage | undefined;
+  let lastText = "";
+  let sentSinceWake = 0; // pi's retries bring nothing new, so they do not start this again
+  let refusedSends = 0;
+  let worked = false; // since the last wake
+  let askedToWork = false; // this wake's reminder is spent
+  let braked = false; // the fleet has stopped this run
+  const retryWaits = (process.env.PI_FLEET_RETRY_WAITS ?? RETRY_WAITS).split(",").filter(Boolean).map(Number);
+  let failedRuns = 0; // in a row
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
   const poller = createPoller({
     hub,
     name,
@@ -475,24 +552,74 @@ export default function (pi: ExtensionAPI) {
     poller.start();
   });
 
+  /**
+   * What pi could not get past in seconds may pass in minutes, so try again later, through
+   * the bus like any message. That way the wake is kept in the inbox, a run in progress is
+   * left alone, and a pause holds it. Any new run tries the model anyway, so it replaces this.
+   */
+  function afterModelError(error: string, origin: FleetMessage | undefined): void {
+    const reason = error.replace(/\.$/, "");
+    const giveUp = () => {
+      failedRuns = 0;
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" stopped on a model error: ${reason}. Test the model in Settings → Models, or with fleet doctor.` });
+    };
+    const wait = waitingHelps(error) ? retryWaits[failedRuns] : undefined;
+    if (wait === undefined) return giveUp();
+    failedRuns++;
+    const asked = Date.now();
+    hub.updateAgent(name, { waitingUntil: asked + wait });
+    const words = wait < 60000 ? `${wait / 1000}s` : `${wait / 60000}m`;
+    hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" got a model error: ${reason}. It tries again in ${words} (${failedRuns} of ${retryWaits.length}), unless you write first or use Stop all.` });
+    retryTimer = setTimeout(() => {
+      if (hub.pausedReason() !== null || hub.tailMessages(500).some((m) => m.from === "user" && m.ts >= asked)) return giveUp();
+      if (hub.readInbox(name).length > 0) return; // a wake is on its way
+      hub.appendMessage({ from: "system", to: name, kind: "chat", text: `Your model failed before you finished (${reason}). Check what is already done, then carry on.`, replyTo: origin?.id });
+    }, wait);
+    retryTimer.unref();
+  }
+
   pi.on("agent_start", () => {
     turns = 0;
+    braked = false;
     fleetCalls.clear();
+    clearTimeout(retryTimer);
     setBusy(true);
   });
-  pi.on("agent_settled", () => {
+  pi.on("agent_settled", (event) => {
     clearTimeout(stallTimer);
-    if (modelError) {
-      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" stopped on a model error: ${modelError.replace(/\.$/, "")}. Test the model in Settings → Models, or with fleet doctor.` });
-      modelError = undefined;
+    // an abort reaches a model call in progress as an error, but nothing went wrong with the model
+    if (modelError && !event.aborted) {
+      afterModelError(modelError, wokenIn);
+    } else {
+      failedRuns = 0;
+      if (wokenIn && sentSinceWake === 0 && worked && !event.aborted) {
+        // a weak model can write its verdict here instead of sending it, and the chain then just stops
+        const verdict = verdictMessage(lastText, name);
+        if (verdict) hub.appendMessage({ from: name, to: wokenIn.to, kind: "chat", text: verdict });
+      }
     }
+    modelError = undefined;
+    wokenIn = undefined;
+    lastText = "";
     setBusy(false);
   });
 
+  const textIn = (content: unknown): string => (Array.isArray(content) ? content.filter((b) => b.type === "text").map((b) => b.text).join("") : String(content ?? ""));
+
   // pi retries failed requests by itself, so only the last answer of a run counts.
   pi.on("message_end", (event) => {
-    const m = event.message as { role: string; stopReason?: string; errorMessage?: string };
-    if (m.role === "assistant") modelError = m.stopReason === "error" ? (m.errorMessage ?? "unknown error") : undefined;
+    const m = event.message as { role: string; stopReason?: string; errorMessage?: string; content?: unknown };
+    if (m.role === "user") {
+      wokenIn = wakeOrigin(textIn(m.content), hub);
+      sentSinceWake = 0;
+      refusedSends = 0;
+      worked = false;
+      askedToWork = false;
+    }
+    if (m.role === "assistant") {
+      modelError = m.stopReason === "error" ? (m.errorMessage ?? "unknown error") : undefined;
+      lastText = textIn(m.content);
+    }
   });
 
   // A model that goes quiet looks exactly like a slow one, and the turn limit below only
@@ -512,7 +639,10 @@ export default function (pi: ExtensionAPI) {
   }
   pi.on("turn_start", watchModel);
   pi.on("message_update", watchModel);
-  pi.on("tool_execution_start", () => clearTimeout(stallTimer));
+  pi.on("tool_execution_start", (event) => {
+    clearTimeout(stallTimer);
+    if (countsAsWork(event.toolName, role)) worked = true;
+  });
 
   /** The run's fleet calls repeat with no end in sight. */
   function repeatsItself(message: unknown): boolean {
@@ -539,15 +669,19 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_end", (event, ctx) => {
     clearTimeout(stallTimer);
     const stop = (reason: string) => {
+      if (braked) return;
+      braked = true;
       hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" was stopped: ${reason}. Send it a message to continue.` });
       ctx.abort();
     };
     if (repeatsItself(event.message)) stop(`it made the same fleet call ${REPEAT_LIMIT} times in one run`);
+    else if (refusedSends >= REFUSED_SEND_LIMIT) stop("it kept sending messages after it was told to end its turn");
     else if (++turns === maxTurns) stop(`${maxTurns} turns in one run (limit: --max-turns)`);
   });
 
   pi.on("session_shutdown", () => {
     poller.stop();
+    clearTimeout(retryTimer);
     try {
       hub.updateAgent(name, { status: "stopped" });
       hub.appendMessage({
@@ -579,7 +713,21 @@ export default function (pi: ExtensionAPI) {
   const refused = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined });
 
   // Weaker models keep inventing work after a handoff, so the way out is the last thing they read.
-  const END_OF_HANDOFF = " If nothing else is assigned to you, end your turn now.";
+  const WOKEN_BY_REPLY = "you will be woken when someone replies, so do not wait for them, check on them or do their work.";
+  const END_OF_HANDOFF = ` If nothing else is assigned to you, end your turn now: ${WOKEN_BY_REPLY}`;
+
+  const overSendLimit = () => {
+    refusedSends++;
+    return refused(`Not sent: that makes ${SEND_LIMIT + 1} messages since anything arrived for you. End your turn now: ${WOKEN_BY_REPLY}`);
+  };
+
+  // A weak model reports work instead of doing it, and everyone else takes the report at its
+  // word. Once per wake, so that a question or a real blocker still gets through.
+  const nothingDoneYet = () => {
+    if (worked || askedToWork || (role !== "implementer" && role !== "reviewer")) return undefined;
+    askedToWork = true;
+    return refused("Not sent: you have not used a tool on this yet, and a message does no work. Do what was asked now, with your tools, in this run, then report what you did. If it really needs no work, or you are blocked, send this again.");
+  };
 
   const fleetSend = defineTool({
     name: "fleet_send",
@@ -600,7 +748,11 @@ export default function (pi: ExtensionAPI) {
       if (!hub.targetKind(to)) return refused(hub.unknownTarget(to));
       const tooLong = messageTooLong(params.text);
       if (tooLong) return refused(`Not sent: ${tooLong}`);
+      const notYet = nothingDoneYet();
+      if (notYet) return notYet;
+      if (sentSinceWake >= SEND_LIMIT) return overSendLimit();
       const msg = hub.appendMessage({ from: name, to, kind: "chat", text: params.text, replyTo: params.replyTo });
+      sentSinceWake++;
       return {
         content: [{ type: "text" as const, text: `Sent to ${addressLabel(to, hub.readChannels())}: ${msg.text}${END_OF_HANDOFF}` }],
         details: { messageId: msg.id, to },
@@ -681,6 +833,9 @@ export default function (pi: ExtensionAPI) {
       const text = mentionText(targets, params.text);
       const tooLong = messageTooLong(text);
       if (tooLong) return refused(`Not sent: ${tooLong}`);
+      const notYet = nothingDoneYet();
+      if (notYet) return notYet;
+      if (sentSinceWake >= SEND_LIMIT) return overSendLimit();
       const msg = hub.appendMessage({
         from: name,
         to: "group",
@@ -688,6 +843,7 @@ export default function (pi: ExtensionAPI) {
         text,
         replyTo: params.replyTo,
       });
+      sentSinceWake++;
       return {
         content: [{ type: "text" as const, text: `Mentioned ${mentions} in #group: ${msg.text}${END_OF_HANDOFF}` }],
         details: { messageId: msg.id, mentioned: targets },
@@ -788,6 +944,7 @@ export default function (pi: ExtensionAPI) {
       const unknown = params.respond.filter((a) => !agents[a]);
       const summary = (params.summary && params.summary.trim()) || channel.summary || "";
       const sent = applyRoute(hub, name, channel, target, valid, summary);
+      if (params.respond.includes(name)) wokenIn = target; // it took the channel's work on itself
       const note = unknown.length ? ` (unknown: ${unknown.join(", ")})` : "";
       const selfNote = params.respond.includes(name) ? ". You picked yourself: do that work once, now, then end your turn" : "";
       return {

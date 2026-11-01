@@ -11,7 +11,7 @@ import { Hub, isPidAlive } from "../src/hub.ts";
 import { bridgeListening } from "../src/rpc.ts";
 import { HUB_FORMAT, readHubFormat } from "../src/hubformat.ts";
 import { execFileSync, spawnSync } from "node:child_process";
-import { DEAD_MODEL, crash, FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
+import { DEAD_MODEL, NO_TOOLS_MODEL, crash, FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
 
 let tmp: string;
 let llm: ChildProcess;
@@ -62,8 +62,8 @@ async function guiPost(port: string, token: string, route: string, body: unknown
   return fetch(`http://127.0.0.1:${port}${route}`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
 }
 
-async function startGui(name: string, args: string[]): Promise<{ hub: Hub; port: string; token: string }> {
-  const { proc, hub } = startFleet(name, ["serve", ...args]);
+async function startGui(name: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<{ hub: Hub; port: string; token: string }> {
+  const { proc, hub } = startFleet(name, ["serve", ...args], extraEnv);
   const [, port, token] = await firstMatch(proc, /GUI: http:\/\/127\.0\.0\.1:(\d+)\/\?token=([\w-]+)/);
   return { hub, port, token };
 }
@@ -133,6 +133,29 @@ describe("fleet end to end", () => {
     expect(log.filter((r) => r.agent !== "router" && r.last.includes("Routing task"))).toEqual([]); // no worker routes
     expect(log.filter((r) => r.agent === "router")).toHaveLength(1); // APPROVE needed no model
   }, 60000);
+
+  it("brings a verdict left in a model's own chat to the group, and nothing else", async () => {
+    const { proc, hub } = startFleet("verdict", ["serve", "--template", "sdlc"]);
+    await firstMatch(proc, /GUI: http/);
+    await idle(hub, ["planner", "implementer", "reviewer"]);
+    const fromReviewer = () => hub.tailMessages(100).filter((m) => m.from === "reviewer" && m.kind === "chat");
+
+    await exchange(hub, "reviewer", "[[inspect APPROVE from a direct message]]");
+    expect(fromReviewer()).toEqual([]); // nobody in the group asked
+
+    hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "route=reviewer [[say It all looks fine.]]" });
+    await until("the reviewer to answer", async () => (await llmLog()).find((r) => r.agent === "reviewer" && r.last.includes("It all looks fine")));
+    await sleep(300);
+    await idle(hub, ["reviewer"]);
+    expect(fromReviewer()).toEqual([]);
+
+    hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "route=reviewer [[inspect REQUEST CHANGES: add a test]]" });
+    await until("the verdict in the group", () => fromReviewer().find((m) => m.to === "group" && m.text === "REQUEST CHANGES: add a test"));
+    await until("the implementer to get it", async () => (await llmLog()).find((r) => r.agent === "implementer" && r.last.includes("REQUEST CHANGES: add a test")));
+    await until("its next verdict, sent the proper way", () => fromReviewer().find((m) => m.text === "APPROVE"));
+    await expectQuiet();
+    expect(fromReviewer().map((m) => m.text)).toEqual(["REQUEST CHANGES: add a test", "APPROVE"]);
+  }, 90000);
 
   it("gives a busy agent what arrived during its run in one wake", async () => {
     const { hub } = startFleet("merged", ["serve", "--agent", "alice", "--agent", "bob"]);
@@ -558,7 +581,7 @@ describe("fleet end to end", () => {
 
   describe("a model that cannot be reached", () => {
     it("says so in the channel, and where to look", async () => {
-      const { hub } = startFleet("dead-agent", ["up", "--agent", `alice::${DEAD_MODEL}`]);
+      const { hub } = startFleet("dead-agent", ["up", "--agent", `alice::${DEAD_MODEL}`], { PI_FLEET_RETRY_WAITS: "" });
       await idle(hub, ["alice"]);
       hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "are you there" });
       const notice = await until("the notice", () => hub.tailMessages(20).find((m) => m.text.includes("stopped on a model error")));
@@ -585,8 +608,27 @@ describe("fleet end to end", () => {
       fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ defaultModel: MODEL, agents: [] }));
       const up = spawnSync(process.execPath, [TSX, FLEET, "doctor", "--dir", hubDir], { env, encoding: "utf8", timeout: 60000 });
       expect(up.status).toBe(0);
-      expect(up.stdout).toContain(`${MODEL} answers`);
-    }, 60000);
+      expect(up.stdout).toContain(`${MODEL} answers and uses tools`);
+      fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ defaultModel: NO_TOOLS_MODEL, agents: [] }));
+      const noTools = spawnSync(process.execPath, [TSX, FLEET, "doctor", "--dir", hubDir], { env, encoding: "utf8", timeout: 60000 });
+      expect(noTools.status).toBe(0);
+      expect(noTools.stdout).toMatch(new RegExp(`warn\\s+model\\s+${NO_TOOLS_MODEL} answers but did not use a tool`));
+      expect(fs.readdirSync(hubDir).filter((f) => f.startsWith("model-test"))).toEqual([]);
+    }, 90000);
+
+    it("does not call a model tool-less over a failure that has nothing to do with tools", () => {
+      const hubDir = path.join(tmp, "doctor-tools");
+      fs.mkdirSync(hubDir, { recursive: true });
+      const doctor = (model: string) => {
+        fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ defaultModel: model, agents: [] }));
+        return spawnSync(process.execPath, [TSX, FLEET, "doctor", "--dir", hubDir], { env, encoding: "utf8", timeout: 60000 }).stdout;
+      };
+      expect(doctor("fake/tool-refused")).toContain("answers but did not use a tool");
+      const cutOff = doctor("fake/cut-off");
+      expect(cutOff).toContain("fake/cut-off answers (");
+      expect(cutOff).not.toContain("did not use a tool");
+      expect(cutOff).not.toContain("uses tools");
+    }, 90000);
   });
 
   it("gives agents the task board fleet.json names", async () => {
@@ -656,7 +698,75 @@ describe("fleet end to end", () => {
     await idle(hub, ["alice"]);
     hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[fail]]" });
     await until("the error notice", () => hub.tailMessages(20).find((m) => m.text.includes('agent "alice" stopped on a model error')), 45000);
+    expect(hub.tailMessages(20).filter((m) => m.text.includes("tries again"))).toEqual([]); // a bad request stays bad
   }, 60000);
+
+  describe("a model that is away for a while", () => {
+    /** pi's own retries are over at once here, so that a test reaches the fleet's. */
+    function away(waits: string): NodeJS.ProcessEnv {
+      const agentDir = path.join(tmp, "quick-retries");
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.copyFileSync(path.join(env.PI_CODING_AGENT_DIR!, "models.json"), path.join(agentDir, "models.json"));
+      fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ retry: { baseDelayMs: 20 } }));
+      return { PI_CODING_AGENT_DIR: agentDir, PI_FLEET_RETRY_WAITS: waits };
+    }
+
+    const notices = (hub: Hub, text: string) => hub.tailMessages(50).filter((m) => m.text.includes(text));
+    const pickedUp = (name: string) => async () => (await llmLog()).filter((r) => r.agent === name && r.last.includes("Your model failed") && r.decision === "text");
+
+    it("tries again by itself, and the work carries on", async () => {
+      const { hub } = startFleet("away-back", ["serve", "--agent", "wobbly"], away("400,400"));
+      await idle(hub, ["wobbly"]);
+      hub.appendMessage({ from: "user", to: "wobbly", kind: "chat", text: "[[flaky 4]] the job" });
+      await until("the notice", () => notices(hub, 'agent "wobbly" got a model error'));
+      await until("it to carry on", async () => (await pickedUp("wobbly")()).length > 0);
+      await sleep(300);
+      await idle(hub, ["wobbly"]);
+      expect(notices(hub, "stopped on a model error")).toEqual([]);
+    }, 60000);
+
+    it("gives up with the usual notice once the tries are spent", async () => {
+      const { hub } = startFleet("away-gone", ["serve", "--agent", "doomed"], away("100,100"));
+      await idle(hub, ["doomed"]);
+      hub.appendMessage({ from: "user", to: "doomed", kind: "chat", text: "[[flaky 999]] the job" });
+      await until("the last word", () => notices(hub, 'agent "doomed" stopped on a model error').length > 0);
+      expect(notices(hub, "It tries again")).toHaveLength(2);
+      await expectQuiet();
+    }, 60000);
+
+    it("a wake takes the place of the retry, and nothing runs twice", async () => {
+      const { hub } = startFleet("away-wake", ["serve", "--agent", "woken"], away("2500"));
+      await idle(hub, ["woken"]);
+      hub.appendMessage({ from: "user", to: "woken", kind: "chat", text: "[[flaky 4]] the job" });
+      await until("the notice", () => notices(hub, 'agent "woken" got a model error').length > 0);
+      hub.appendMessage({ from: "planner", to: "woken", kind: "chat", text: "how is it going?" }); // not a person: they cancel it anyway
+      await until("the new message to be answered", async () => (await llmLog()).find((r) => r.agent === "woken" && r.last.includes("how is it going") && r.decision === "text"));
+      await sleep(3500);
+      expect(await pickedUp("woken")()).toEqual([]);
+      expect(hub.tailMessages(50).filter((m) => m.to === "woken" && m.from === "system")).toEqual([]);
+    }, 60000);
+
+    it("Stop all cancels a waiting retry", async () => {
+      const { hub, port, token } = await startGui("away-stop", ["--agent", "halted"], away("2500"));
+      await idle(hub, ["halted"]);
+      hub.appendMessage({ from: "user", to: "halted", kind: "chat", text: "[[flaky 4]] the job" });
+      await until("the notice", () => notices(hub, 'agent "halted" got a model error').length > 0);
+      await guiPost(port, token, "/stop-all", {});
+      await until("the last word", () => notices(hub, 'agent "halted" stopped on a model error').length > 0);
+      await sleep(500);
+      expect(hub.tailMessages(50).filter((m) => m.to === "halted" && m.from === "system")).toEqual([]);
+    }, 60000);
+
+    it("delivers the retry through the inbox, so a crash in that run does not lose it", async () => {
+      const { hub } = startFleet("away-inbox", ["serve", "--agent", "kept"], away("200"));
+      await idle(hub, ["kept"]);
+      hub.appendMessage({ from: "user", to: "kept", kind: "chat", text: "[[flaky 4]] the job" });
+      await until("the retry", async () => (await pickedUp("kept")()).length > 0);
+      const retry = (await pickedUp("kept")())[0];
+      expect(retry.last).toContain("New fleet messages for you");
+      expect(retry.conversation).toContain("the job"); // it still has the work in front of it
+    }, 60000);
+  });
 
   it("honours lean in fleet.json", async () => {
     const hubDir = path.join(tmp, "lean");
@@ -766,6 +876,170 @@ describe("fleet end to end", () => {
     await expectQuiet();
   }, 60000);
 
+  describe("a crew that stops before the work is done", () => {
+    const QUIET = { PI_FLEET_QUIET_MS: "1500" };
+    const checksOf = async (job: string) => (await llmLog()).filter((r) => r.agent === "watcher" && r.last.includes(job));
+    const notices = (hub: Hub, text: string) => hub.tailMessages(100).filter((m) => m.from === "system" && m.text.includes(text));
+    const fromTheRouter = (hub: Hub) => hub.tailMessages(100).filter((m) => m.from === "router" && m.kind === "chat" && m.text.startsWith("The team has gone quiet"));
+
+    async function crew(name: string, extra: NodeJS.ProcessEnv = QUIET): Promise<Hub> {
+      const { proc, hub } = startFleet(name, ["serve", "--template", "sdlc"], extra);
+      await firstMatch(proc, /GUI: http/);
+      await idle(hub, ["planner", "implementer", "reviewer"]);
+      return hub;
+    }
+
+    const ask = (hub: Hub, text: string) => hub.appendMessage({ from: "user", to: "group", kind: "chat", text });
+
+    it("sends the one who must act back to work, and the chain carries on", async () => {
+      const hub = await crew("stalled");
+      ask(hub, "job-stalled route=implementer [[stalled implementer]] [[say I will start on it now.]]");
+      await until("the reminder", () => notices(hub, "the router asked implementer to carry on (1 of 2)")[0]);
+      await until("the file", () => fs.existsSync(path.join(tmp, "nudged.txt")));
+      await until("the verdict", () => hub.tailMessages(100).find((m) => m.from === "reviewer" && m.text === "APPROVE"));
+      await sleep(1500 + 1500);
+      const checks = await checksOf("job-stalled");
+      expect(checks).toHaveLength(1);
+      expect(checks[0].last).toContain("implementer (implementer): none");
+      expect(fromTheRouter(hub)).toHaveLength(1);
+    }, 60000);
+
+    it("tells the person when reminders do not help, and then leaves the crew alone", async () => {
+      const hub = await crew("hopeless");
+      ask(hub, "job-hopeless route=implementer [[stalled implementer hopeless]] [[say I will start on it now.]]");
+      await until("the notice", () => notices(hub, "the crew has stopped with the work unfinished")[0], 45000);
+      await expectQuiet();
+      expect(await checksOf("job-hopeless")).toHaveLength(3);
+      expect(fromTheRouter(hub)).toHaveLength(2);
+      expect(notices(hub, "try a stronger model")).toHaveLength(1);
+    }, 90000);
+
+    it("says nothing when the router sees that the job is done", async () => {
+      const hub = await crew("answered");
+      ask(hub, "job-answered route=planner [[say It has three modules.]]");
+      await until("the check", async () => (await checksOf("job-answered")).length === 1);
+      await sleep(1500 + 1500);
+      expect(await checksOf("job-answered")).toHaveLength(1);
+      expect(fromTheRouter(hub)).toEqual([]);
+      expect(notices(hub, "the crew")).toEqual([]);
+    }, 60000);
+
+    it("has nothing to ask when the crew finished with a real approval", async () => {
+      const hub = await crew("approved");
+      ask(hub, "job-approved [[write approved.txt done]]");
+      await until("the verdict", () => hub.tailMessages(100).find((m) => m.from === "reviewer" && m.text === "APPROVE"));
+      await sleep(1500 + 1500);
+      expect(await checksOf("job-approved")).toEqual([]);
+    }, 60000);
+
+    it("still looks when an approval has nothing behind it", async () => {
+      const hub = await crew("empty-approval");
+      ask(hub, "job-empty route=reviewer please approve");
+      await until("the verdict", () => hub.tailMessages(100).find((m) => m.from === "reviewer" && m.text === "APPROVE"));
+      await until("the check", async () => (await checksOf("job-empty")).length === 1);
+    }, 60000);
+
+    it("has nothing to ask when nobody was woken", async () => {
+      const hub = await crew("unrouted");
+      ask(hub, "job-unrouted route=nobody-here");
+      await until("the routing", () => hub.tailMessages(20).find((m) => m.kind === "activity" && m.text === "routed to nobody"));
+      await sleep(1500 + 1500);
+      expect(await checksOf("job-unrouted")).toEqual([]);
+    }, 60000);
+
+    it("leaves the crew alone after Stop all", async () => {
+      const hub = await crew("stopped-crew");
+      ask(hub, "job-stopped route=planner [[say It has three modules.]]");
+      await until("the planner to answer", async () => (await llmLog()).find((r) => r.agent === "planner" && r.last.includes("job-stopped")));
+      hub.pause("stopped by you");
+      await sleep(1500 + 1500);
+      expect(await checksOf("job-stopped")).toEqual([]);
+    }, 60000);
+
+    it("waits for a run in progress", async () => {
+      const hub = await crew("long-run");
+      ask(hub, "job-long route=planner [[slow 6]]");
+      await until("the run", async () => (await llmLog()).find((r) => r.agent === "planner" && r.last.includes("job-long")));
+      await sleep(4000);
+      expect(await checksOf("job-long")).toEqual([]);
+      await idle(hub, ["planner"]);
+      const settled = Date.now();
+      await until("the check after the run", async () => (await checksOf("job-long")).length === 1);
+      expect(Date.now() - settled).toBeGreaterThan(1000); // a quiet spell of its own
+    }, 60000);
+
+    it("waits for a run a person started directly, which no inbox shows", async () => {
+      const { hub, port, token } = await startGui("direct-run", ["--template", "sdlc"], QUIET);
+      await idle(hub, ["planner", "implementer", "reviewer"]);
+      ask(hub, "job-direct route=planner [[say Noted.]]");
+      await until("the planner to answer", async () => (await llmLog()).find((r) => r.agent === "planner" && r.last.includes("job-direct")));
+      await sleep(300);
+      await idle(hub, ["planner"]);
+      await guiPost(port, token, "/rpc", { agent: "planner", command: "prompt", payload: { message: "[[slow 6]]" } });
+      await sleep(4000);
+      expect(await checksOf("job-direct")).toEqual([]);
+    }, 60000);
+
+    it("waits for the router to finish with a message", async () => {
+      const hub = await crew("slow-router");
+      ask(hub, "job-routing [[router-slow 6]] [[say Noted.]]");
+      await until("the router", async () => (await llmLog()).find((r) => r.agent === "router" && r.last.includes("job-routing")));
+      await sleep(4000);
+      expect(await checksOf("job-routing")).toEqual([]);
+      await until("the check after the work it went to", async () => (await checksOf("job-routing")).length === 1);
+    }, 60000);
+
+    it("drops what it was asking when a person writes meanwhile", async () => {
+      const hub = await crew("overtaken");
+      ask(hub, "job-first route=planner [[watcher-slow 4]] [[say Noted.]]");
+      await until("the first check", async () => (await checksOf("job-first")).length === 1);
+      ask(hub, "job-second route=planner [[say Noted again.]]");
+      await until("a check of the new job", async () => (await checksOf("job-second")).length === 1);
+    }, 60000);
+
+    it("falls back on someone who can act when the router names nobody real", async () => {
+      const hub = await crew("no-such-member");
+      ask(hub, "job-ghost route=planner [[stalled ghost]] [[say Noted.]]");
+      await until("the reminder", () => notices(hub, "the router asked planner to carry on")[0]);
+    }, 60000);
+
+    it("can be turned off", async () => {
+      const hub = await crew("watch-off", { PI_FLEET_QUIET_MS: "0" });
+      ask(hub, "job-off route=planner [[stalled planner]] [[say Noted.]]");
+      await until("the planner to answer", async () => (await llmLog()).find((r) => r.agent === "planner" && r.last.includes("job-off")));
+      await sleep(3000);
+      expect(await checksOf("job-off")).toEqual([]);
+    }, 60000);
+
+    it("keeps to what the person asked, whatever the crew says after it", async () => {
+      const hub = await crew("kept-task");
+      ask(hub, "job-kept route=planner [[repeat]]");
+      await until("the check", async () => (await checksOf("job-kept")).length === 1);
+      expect((await checksOf("job-kept"))[0].last).toContain("planner: Already done.");
+    }, 60000);
+
+    it("does not take a reviewer's word when it looked at nothing", async () => {
+      const hub = await crew("rubber-stamp");
+      ask(hub, "job-stamp route=reviewer [[say APPROVE]]");
+      await until("the check", async () => (await checksOf("job-stamp")).length === 1);
+      expect(hub.tailMessages(50).filter((m) => m.from === "reviewer" && m.kind === "chat")).toEqual([]);
+    }, 60000);
+  });
+
+  it("does not take an agent waiting to try its model again for a stalled one", async () => {
+    const agentDir = path.join(tmp, "quick-retries-quiet");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.copyFileSync(path.join(env.PI_CODING_AGENT_DIR!, "models.json"), path.join(agentDir, "models.json"));
+    fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ retry: { baseDelayMs: 20 } }));
+    const { hub } = startFleet("retry-quiet", ["serve", "--agent", "waiter"], { PI_CODING_AGENT_DIR: agentDir, PI_FLEET_RETRY_WAITS: "6000", PI_FLEET_QUIET_MS: "300" });
+    await idle(hub, ["waiter"]);
+    hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "route=waiter [[flaky 4]] hello" });
+    await until("the retry notice", () => hub.tailMessages(20).find((m) => m.text.includes('"waiter" got a model error')), 30000);
+    expect(hub.readAgents().waiter.waitingUntil).toBeGreaterThan(Date.now());
+    await sleep(2000);
+    expect((await llmLog()).filter((r) => r.agent === "watcher" && r.last.includes("[[flaky 4]]"))).toEqual([]);
+  }, 60000);
+
   it("stops an agent that never ends its run", async () => {
     const { hub } = startFleet("turns", ["serve", "--agent", "runaway", "--max-turns", "5"]);
     await idle(hub, ["runaway"]);
@@ -785,6 +1059,21 @@ describe("fleet end to end", () => {
     await idle(hub, ["parrot"]);
     await expectQuiet();
     expect(hub.tailMessages(20).filter((m) => m.from === "parrot")).toHaveLength(3);
+    expect(hub.tailMessages(20).filter((m) => m.text.includes("model error"))).toEqual([]); // that was the brake, not the model
+  }, 60000);
+
+  it("stops an agent that keeps talking, however it words it", async () => {
+    const { hub } = startFleet("chatter", ["serve", "--agent", "talker"]);
+    await idle(hub, ["talker"]);
+    hub.appendMessage({ from: "user", to: "talker", kind: "chat", text: "[[chatter]]" });
+    await until("the notice", () => hub.tailMessages(30).find((m) => m.text.includes('"talker" was stopped: it kept sending')));
+    await idle(hub, ["talker"]);
+    await expectQuiet();
+    const sent = hub.tailMessages(30).filter((m) => m.from === "talker" && m.kind === "chat");
+    expect(sent).toHaveLength(6);
+    expect(new Set(sent.map((m) => m.text)).size).toBe(6); // none of them an exact repeat
+    expect((await llmLog()).filter((r) => r.agent === "talker").length).toBeLessThanOrEqual(9);
+    expect(hub.tailMessages(30).filter((m) => m.text.includes("model error"))).toEqual([]);
   }, 60000);
 
   it("Stop all aborts every run, drops what is queued, and holds the fleet", async () => {

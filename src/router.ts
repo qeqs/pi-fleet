@@ -4,6 +4,7 @@
  * messages that need no judgement follow a rule, and the rest get one short model
  * call that starts from nothing each time.
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentInfo, ChannelConfig, FleetMessage } from "./hub.ts";
@@ -21,6 +22,8 @@ const RECENT_MESSAGES = 6;
 const SYSTEM_PROMPT = `You route messages in a team chat of software agents. Reply with only a JSON object and nothing else:
 {"respond": ["names of the members who must act"], "summary": "the updated channel summary, under 500 characters"}
 Pick only the members who must act now, usually one. Use [] when nothing needs doing: a final answer, an approval or a status report.`;
+
+const TOOL_TEST_PROMPT = "You check that a model can use tools. Do exactly what you are told.";
 
 /** A decision that needs no model, or null if this message takes judgement. */
 export function routeByRules(m: FleetMessage, channel: ChannelConfig, agents: AgentInfo[]): string[] | null {
@@ -80,6 +83,8 @@ export interface ModelTest {
   /** What went wrong, in the words of the model's provider. */
   error?: string;
   ms: number;
+  /** Whether it really used a tool. Unknown if the question itself failed, as on a rate limit. */
+  tools?: boolean;
 }
 
 /** Ask a model for one word: the only way to know a server is up and a key is good. */
@@ -89,7 +94,8 @@ export async function testModel(root: string, cwd: string, logFile: string, mode
   try {
     const reply = await router.ask("Reply with the single word: ok");
     const ms = Date.now() - started;
-    return reply.trim() ? { ok: true, ms } : { ok: false, error: router.failure ?? "the model answered with nothing", ms };
+    if (!reply.trim()) return { ok: false, error: router.failure ?? "the model answered with nothing", ms };
+    return { ok: true, ms, tools: await usesTools(root, cwd, logFile, model) };
   } catch (err) {
     return { ok: false, error: (err as Error).message, ms: Date.now() - started };
   } finally {
@@ -97,7 +103,30 @@ export async function testModel(root: string, cwd: string, logFile: string, mode
   }
 }
 
-/** A bare pi process with no tools or extensions, restarted from nothing for every question. */
+/**
+ * Whether a model really calls a tool. A server can take a list of tools and ignore it, and agents
+ * on such a model can only write text. The answer is in a file, so that it cannot be guessed.
+ */
+async function usesTools(root: string, cwd: string, logFile: string, model: string | undefined): Promise<boolean | undefined> {
+  const word = crypto.randomUUID().slice(0, 8);
+  const file = path.join(cwd, `model-test-${word}.txt`);
+  const router = new ModelRouter(root, cwd, logFile, model, TOOL_TEST_PROMPT, "read");
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.writeFileSync(file, word);
+    const reply = await router.ask(`Use the read tool on ${file}, then reply with what the file says.`);
+    if (reply.includes(word)) return true;
+    // a provider can refuse a model for this very reason: "no endpoints that support tool use"
+    return router.failure && !/\btool/i.test(router.failure) ? undefined : false;
+  } catch {
+    return undefined;
+  } finally {
+    router.close();
+    fs.rmSync(file, { force: true });
+  }
+}
+
+/** A bare pi process with no extensions, restarted from nothing for every question. */
 export class ModelRouter {
   private rpc: PiRpc | null = null;
   private waiting: { done: () => void; text: string } | null = null;
@@ -111,10 +140,12 @@ export class ModelRouter {
     private cwd: string,
     private logFile: string,
     private model: string | undefined,
+    private systemPrompt = SYSTEM_PROMPT,
+    private tools?: string,
   ) {}
 
   private start(): PiRpc {
-    const args = ["--mode", "rpc", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp", "--thinking", "off", "--system-prompt", SYSTEM_PROMPT];
+    const args = ["--mode", "rpc", "--no-session", ...(this.tools ? ["--tools", this.tools] : ["--no-tools"]), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp", "--thinking", "off", "--system-prompt", this.systemPrompt];
     if (this.model) args.push("--model", this.model);
     fs.mkdirSync(this.cwd, { recursive: true });
     fs.mkdirSync(path.dirname(this.logFile), { recursive: true }); // a new hub has no agents yet

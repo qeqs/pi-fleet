@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hub } from "../src/hub.ts";
 import { MAX_MESSAGE_LEN } from "../src/hub.ts";
-import fleetExtension, { groupWakesAgent, buildLookup, createPoller, fleetPrompt, rolePrompt, worktreePrompt, admitMessage, mentionText, openspecArgs, TASKBOARD } from "../src/extension/index.ts";
+import fleetExtension, { applyRoute, groupWakesAgent, buildLookup, createPoller, fleetPrompt, formatInbox, rolePrompt, worktreePrompt, admitMessage, mentionText, openspecArgs, TASKBOARD, waitingHelps } from "../src/extension/index.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
@@ -337,6 +337,7 @@ describe("a silent or failing model", () => {
     };
     vi.stubEnv("PI_FLEET_DIR", dir);
     vi.stubEnv("PI_FLEET_AGENT", "bob");
+    vi.stubEnv("PI_FLEET_RETRY_WAITS", ""); // the fleet's own tries have tests of their own
     fleetExtension(stub as unknown as ExtensionAPI);
     vi.unstubAllEnvs();
     return handlers;
@@ -398,6 +399,607 @@ describe("a silent or failing model", () => {
     h.message_end({ message: { role: "user" } }, ctx);
     h.agent_settled({}, ctx);
     expect(notes("boom")).toHaveLength(1);
+  });
+});
+
+describe("errors worth waiting out", () => {
+  it.each(["Connection error.", "fetch failed", "Request timed out.", "429 Rate limit reached", "500 Internal Server Error", "502 Bad Gateway", "503 status code (no body)", "Provider returned error", "Provider finish_reason: error", "Overloaded"])("tries again after: %s", (error) => {
+    expect(waitingHelps(error)).toBe(true);
+  });
+
+  it.each(["401 Incorrect API key provided", "403 Forbidden", "404 The model `x` does not exist", "401 Provider returned error", "No API key found for openrouter", "400 Bad request", "insufficient_quota", "429: Rate limit exceeded: free-models-per-day. Add 10 credits", "Provider finish_reason: content_filter", "This operation was aborted."])("gives up at once on: %s", (error) => {
+    expect(waitingHelps(error)).toBe(false);
+  });
+});
+
+describe("a model that is away for a while", () => {
+  type Handler = (event: unknown, ctx: { abort: () => void }) => void;
+  type Tool = { execute: (id: string, params: Record<string, unknown>) => Promise<unknown> };
+
+  function load(): { on: Record<string, Handler>; tools: Record<string, Tool> } {
+    const on: Record<string, Handler> = {};
+    const tools: Record<string, Tool> = {};
+    const stub = {
+      on: (event: string, handler: Handler) => (on[event] = handler),
+      registerCommand: () => {},
+      registerTool: (t: Tool & { name: string }) => (tools[t.name] = t),
+    };
+    vi.stubEnv("PI_FLEET_DIR", dir);
+    vi.stubEnv("PI_FLEET_AGENT", "bob");
+    fleetExtension(stub as unknown as ExtensionAPI);
+    vi.unstubAllEnvs();
+    return { on, tools };
+  }
+
+  const ctx = { abort: () => {} };
+  const THIRTY_SECONDS = 30 * 1000;
+  const TWO_MINUTES = 2 * 60 * 1000;
+  const FIVE_MINUTES = 5 * 60 * 1000;
+  const prompt = (text: string) => ({ message: { role: "user", content: [{ type: "text", text }] } });
+  const failed = (errorMessage = "Connection error.") => ({ message: { role: "assistant", stopReason: "error", errorMessage } });
+
+  function failRun(on: Record<string, Handler>, text = "work to do", error?: string): void {
+    on.agent_start({}, ctx);
+    on.message_end(prompt(text), ctx);
+    on.message_end(failed(error), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+  }
+
+  const notes = (text: string) => hub.tailMessages(50).filter((m) => m.text.includes(text));
+  const retries = () => hub.tailMessages(50).filter((m) => m.to === "bob" && m.kind === "chat" && m.from === "system");
+  const gaveUp = () => notes("stopped on a model error");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    for (const a of ["bob", "ann"]) hub.updateAgent(a, { name: a, pid: 1, cwd: ".", status: "idle" });
+    hub.upsertChannel({ name: "group", members: ["bob", "ann"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("says why and when, then asks the agent to carry on", () => {
+    const { on } = load();
+    failRun(on);
+    expect(notes('agent "bob" got a model error: Connection error. It tries again in 30s (1 of 3)')).toHaveLength(1);
+    expect(gaveUp()).toEqual([]);
+    vi.advanceTimersByTime(THIRTY_SECONDS - 1000);
+    expect(retries()).toEqual([]);
+    vi.advanceTimersByTime(1000);
+    expect(retries()).toHaveLength(1);
+    expect(retries()[0].text).toContain("Check what is already done");
+    expect(retries()[0].text).toContain("Connection error");
+  });
+
+  it("waits longer each time, then gives up with the usual notice", () => {
+    const { on } = load();
+    for (const [wait, words] of [[THIRTY_SECONDS, "30s (1 of 3)"], [TWO_MINUTES, "2m (2 of 3)"], [FIVE_MINUTES, "5m (3 of 3)"]] as const) {
+      failRun(on);
+      expect(notes(`It tries again in ${words}`)).toHaveLength(1);
+      vi.advanceTimersByTime(wait);
+    }
+    expect(retries()).toHaveLength(3);
+    failRun(on);
+    expect(gaveUp().map((m) => m.text)).toEqual(['agent "bob" stopped on a model error: Connection error. Test the model in Settings → Models, or with fleet doctor.']);
+    vi.advanceTimersByTime(FIVE_MINUTES * 2);
+    expect(retries()).toHaveLength(3);
+  });
+
+  it("starts counting again after a run that worked", () => {
+    const { on } = load();
+    failRun(on);
+    vi.advanceTimersByTime(THIRTY_SECONDS);
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] } }, ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    failRun(on);
+    expect(notes("It tries again in 30s (1 of 3)")).toHaveLength(2);
+  });
+
+  it("gives up at once on an error waiting cannot fix", () => {
+    const { on } = load();
+    failRun(on, "work to do", "401 Incorrect API key provided");
+    expect(gaveUp()).toHaveLength(1);
+    expect(notes("tries again")).toEqual([]);
+    vi.advanceTimersByTime(FIVE_MINUTES);
+    expect(retries()).toEqual([]);
+  });
+
+  it("does not run on top of a new wake", () => {
+    const { on } = load();
+    failRun(on);
+    on.agent_start({}, ctx);
+    on.message_end(prompt("something new arrived"), ctx);
+    vi.advanceTimersByTime(THIRTY_SECONDS);
+    expect(retries()).toEqual([]);
+  });
+
+  it("leaves it to a wake that is on its way", () => {
+    const { on } = load();
+    failRun(on);
+    hub.enqueueWake("bob", "a message waiting to be delivered");
+    vi.advanceTimersByTime(THIRTY_SECONDS);
+    expect(retries()).toEqual([]);
+    expect(gaveUp()).toEqual([]); // that run tries the model anyway
+  });
+
+  it("is cancelled by a person's message, even to someone else", () => {
+    const { on } = load();
+    failRun(on);
+    vi.advanceTimersByTime(1000);
+    hub.appendMessage({ from: "user", to: "ann", kind: "chat", text: "what now?" });
+    vi.advanceTimersByTime(THIRTY_SECONDS);
+    expect(retries()).toEqual([]);
+    expect(gaveUp()).toHaveLength(1);
+  });
+
+  it("is not cancelled by what agents say", () => {
+    const { on } = load();
+    failRun(on);
+    hub.appendMessage({ from: "ann", to: "group", kind: "chat", text: "still working" });
+    vi.advanceTimersByTime(THIRTY_SECONDS);
+    expect(retries()).toHaveLength(1);
+  });
+
+  it("is cancelled by a pause, and Stop all is one", () => {
+    const { on } = load();
+    failRun(on);
+    hub.pause("stopped by you");
+    vi.advanceTimersByTime(THIRTY_SECONDS);
+    expect(retries()).toEqual([]);
+    expect(gaveUp()).toHaveLength(1);
+  });
+
+  it("is forgotten when the agent shuts down", () => {
+    const { on } = load();
+    failRun(on);
+    on.session_shutdown({}, ctx);
+    vi.advanceTimersByTime(THIRTY_SECONDS);
+    expect(retries()).toEqual([]);
+  });
+
+  it("stays out of a run that was aborted", () => {
+    const { on } = load();
+    on.agent_start({}, ctx);
+    on.message_end(prompt("work to do"), ctx);
+    on.message_end(failed("This operation was aborted."), ctx);
+    on.agent_settled({ aborted: true }, ctx);
+    vi.advanceTimersByTime(FIVE_MINUTES);
+    expect(hub.tailMessages(50).filter((m) => m.text.includes("model error"))).toEqual([]);
+    expect(retries()).toEqual([]);
+  });
+
+  it("forgets the error of an aborted run", () => {
+    const { on } = load();
+    on.agent_start({}, ctx);
+    on.message_end(prompt("work to do"), ctx);
+    on.message_end(failed("Connection error."), ctx);
+    on.agent_settled({ aborted: true }, ctx);
+    on.agent_start({}, ctx);
+    on.message_end(prompt("next"), ctx);
+    on.agent_settled({ aborted: false }, ctx); // refused before the model was asked
+    expect(hub.tailMessages(50).filter((m) => m.text.includes("model error"))).toEqual([]);
+  });
+
+  it("does not call the brake's own abort a model error, or try again", () => {
+    const { on } = load();
+    const call = { message: { content: [{ type: "toolCall", name: "fleet_send", arguments: { to: "group", text: "Done" } }] } };
+    on.agent_start({}, ctx);
+    on.message_end(prompt("work to do"), ctx);
+    for (let i = 0; i < 3; i++) on.turn_end(call, ctx);
+    on.message_end(failed("This operation was aborted."), ctx);
+    on.agent_settled({ aborted: true }, ctx);
+    vi.advanceTimersByTime(FIVE_MINUTES);
+    expect(notes("same fleet call 3 times")).toHaveLength(1);
+    expect(hub.tailMessages(50).filter((m) => m.text.includes("model error"))).toEqual([]);
+    expect(retries()).toEqual([]);
+  });
+
+  it("keeps the channel the work came from, so the verdict still gets there", () => {
+    const { on } = load();
+    hub.upsertChannel({ name: "dev", members: ["bob", "ann"] });
+    const asked = hub.appendMessage({ from: "ann", to: "dev", kind: "chat", text: "@bob please review" });
+    failRun(on, formatInbox([asked], lookup(), hub.readChannels()));
+    vi.advanceTimersByTime(THIRTY_SECONDS);
+    const [retry] = retries();
+    expect(retry.replyTo).toBe(asked.id);
+    on.agent_start({}, ctx);
+    on.message_end(prompt(formatInbox([retry], lookup(), hub.readChannels())), ctx);
+    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.message_end({ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "APPROVE" }] } }, ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(hub.tailMessages(50).filter((m) => m.from === "bob")).toMatchObject([{ to: "dev", text: "APPROVE" }]);
+  });
+});
+
+describe("a run that keeps talking", () => {
+  type Handler = (event: unknown, ctx: { abort: () => void }) => void;
+  interface ToolResult {
+    content: { text: string }[];
+  }
+  type Tool = { execute: (id: string, params: Record<string, unknown>) => Promise<ToolResult> };
+
+  function load(): { on: Record<string, Handler>; tools: Record<string, Tool> } {
+    const on: Record<string, Handler> = {};
+    const tools: Record<string, Tool> = {};
+    const stub = {
+      on: (event: string, handler: Handler) => (on[event] = handler),
+      registerCommand: () => {},
+      registerTool: (t: Tool & { name: string }) => (tools[t.name] = t),
+    };
+    vi.stubEnv("PI_FLEET_DIR", dir);
+    vi.stubEnv("PI_FLEET_AGENT", "impl");
+    fleetExtension(stub as unknown as ExtensionAPI);
+    vi.unstubAllEnvs();
+    return { on, tools };
+  }
+
+  const LIMIT = 6;
+  const ctx = { abort: () => {} };
+  const sent = () => hub.tailMessages(50).filter((m) => m.from === "impl" && m.kind === "chat");
+  const send = (tools: Record<string, Tool>, i: number) => tools.fleet_send.execute(String(i), { to: "group", text: `part ${i}` });
+  const arrived = { message: { role: "user", content: [{ type: "text", text: "New fleet messages for you" }] } };
+
+  beforeEach(() => {
+    for (const a of ["impl", "rev"]) hub.updateAgent(a, { name: a, pid: 1, cwd: ".", status: "idle" });
+    hub.upsertChannel({ name: "group", members: ["impl", "rev"] });
+  });
+
+  it("is told after each handoff that a reply will wake it", async () => {
+    const { tools } = load();
+    for (const res of [await tools.fleet_send.execute("1", { to: "rev", text: "over to you" }), await tools.fleet_mention.execute("2", { agents: ["rev"], text: "over to you" })]) {
+      expect(res.content[0].text).toContain("end your turn now");
+      expect(res.content[0].text).toContain("you will be woken when someone replies");
+      expect(res.content[0].text).toContain("do not wait for them, check on them or do their work");
+    }
+  });
+
+  it("can send a long report in parts", async () => {
+    const { tools } = load();
+    for (let i = 0; i < LIMIT; i++) await send(tools, i);
+    expect(sent()).toHaveLength(LIMIT);
+  });
+
+  it("is refused past that, and told to end its turn", async () => {
+    const { tools } = load();
+    for (let i = 0; i < LIMIT; i++) await send(tools, i);
+    const res = await send(tools, LIMIT);
+    expect(res.content[0].text).toContain("Not sent");
+    expect(res.content[0].text).toContain("End your turn now");
+    expect(res.content[0].text).toContain("you will be woken when someone replies");
+    expect(sent()).toHaveLength(LIMIT);
+  });
+
+  it("counts mentions the same as messages", async () => {
+    const { tools } = load();
+    for (let i = 0; i < LIMIT; i++) await tools.fleet_mention.execute(String(i), { agents: ["rev"], text: `part ${i}` });
+    const res = await send(tools, LIMIT);
+    expect(res.content[0].text).toContain("Not sent");
+    expect((await tools.fleet_mention.execute("x", { agents: ["rev"], text: "again" })).content[0].text).toContain("Not sent");
+  });
+
+  it("does not count what was refused for another reason", async () => {
+    const { tools } = load();
+    for (let i = 0; i < LIMIT + 2; i++) await tools.fleet_send.execute(String(i), { to: "nobody", text: "hi" });
+    expect((await send(tools, 0)).content[0].text).toContain("Sent to");
+  });
+
+  it("starts counting again when something arrives", async () => {
+    const { on, tools } = load();
+    for (let i = 0; i < LIMIT; i++) await send(tools, i);
+    on.message_end(arrived, ctx);
+    expect((await send(tools, LIMIT)).content[0].text).toContain("Sent to");
+  });
+
+  it("counts on through pi's own retries, which bring nothing new", async () => {
+    const { on, tools } = load();
+    for (let i = 0; i < LIMIT; i++) await send(tools, i);
+    on.agent_start({}, ctx);
+    expect((await send(tools, LIMIT)).content[0].text).toContain("Not sent");
+  });
+
+  it("is stopped when it ignores the refusal, however varied its messages", async () => {
+    const { on, tools } = load();
+    let aborts = 0;
+    const counting = { abort: () => aborts++ };
+    on.agent_start({}, counting);
+    for (let i = 0; i < LIMIT + 1; i++) await send(tools, i);
+    on.turn_end({}, counting);
+    expect(aborts).toBe(0); // one refusal may still be heeded
+    await send(tools, LIMIT + 1);
+    on.turn_end({}, counting);
+    on.turn_end({}, counting);
+    expect(aborts).toBe(1);
+    expect(hub.tailMessages(50).filter((m) => m.text.includes("kept sending"))).toHaveLength(1);
+  });
+});
+
+describe("a verdict left in an agent's own chat", () => {
+  type Handler = (event: unknown, ctx: { abort: () => void }) => void;
+  type Tool = { execute: (id: string, params: Record<string, unknown>) => Promise<unknown> };
+
+  function load(name = "rev", role?: string): { on: Record<string, Handler>; tools: Record<string, Tool> } {
+    const on: Record<string, Handler> = {};
+    const tools: Record<string, Tool> = {};
+    const stub = {
+      on: (event: string, handler: Handler) => (on[event] = handler),
+      registerCommand: () => {},
+      registerTool: (t: Tool & { name: string }) => (tools[t.name] = t),
+    };
+    vi.stubEnv("PI_FLEET_DIR", dir);
+    vi.stubEnv("PI_FLEET_AGENT", name);
+    if (role) vi.stubEnv("PI_FLEET_ROLE", role);
+    fleetExtension(stub as unknown as ExtensionAPI);
+    vi.unstubAllEnvs();
+    return { on, tools };
+  }
+
+  const ctx = { abort: () => {} };
+  const inbox = (m: FleetMessage) => formatInbox([m], lookup(), hub.readChannels());
+  const said = (text: string) => ({ message: { role: "assistant", stopReason: "stop", content: [{ type: "thinking", thinking: "hm" }, { type: "text", text }] } });
+
+  /** One whole run: pi says the prompt came in, the model answers, and the run settles. */
+  function run(on: Record<string, Handler>, prompt: string, answer: string, settled = { aborted: false }): void {
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: prompt }] } }, ctx);
+    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.message_end(said(answer), ctx);
+    on.agent_settled(settled, ctx);
+  }
+
+  /** How the dedicated router hands a channel message to a member: a DM that replies to it. */
+  function routed(text: string, channel = "group"): string {
+    const posted = hub.appendMessage({ from: "impl", to: channel, kind: "chat", text });
+    applyRoute(hub, "router", hub.getChannel(channel)!, posted, ["rev"], "");
+    return inbox(hub.tailMessages(5).reverse().find((m) => m.to === "rev")!);
+  }
+
+  const fromRev = () => hub.tailMessages(20).filter((m) => m.from === "rev" && m.kind === "chat");
+
+  beforeEach(() => {
+    for (const a of ["impl", "rev"]) hub.updateAgent(a, { name: a, pid: 1, cwd: ".", status: "idle" });
+    hub.upsertChannel({ name: "group", members: ["impl", "rev"] });
+    hub.upsertChannel({ name: "dev", members: ["impl", "rev"] });
+  });
+
+  it("is not taken from an agent that looked at nothing", () => {
+    const { on } = load();
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
+    on.tool_execution_start({ toolName: "fleet_agents" }, ctx);
+    on.message_end(said("APPROVE"), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toEqual([]);
+  });
+
+  describe("a message from an agent that has not started", () => {
+    const wake = (on: Record<string, Handler>) => on.message_end({ message: { role: "user", content: [{ type: "text", text: "(abc) work for you" }] } }, ctx);
+    const send = (tools: Record<string, Tool>, text = "I will start now") => tools.fleet_send.execute("1", { to: "group", text }) as Promise<{ content: { text: string }[] }>;
+    const posted = () => hub.tailMessages(20).filter((m) => m.kind === "chat" && m.text === "I will start now");
+
+    it("is refused the first time, and says what to do instead", async () => {
+      const { on, tools } = load("impl", "implementer");
+      wake(on);
+      const res = await send(tools);
+      expect(res.content[0].text).toContain("you have not used a tool");
+      expect(posted()).toEqual([]);
+    });
+
+    it("goes through the second time: it may be a question, or a real blocker", async () => {
+      const { on, tools } = load("impl", "implementer");
+      wake(on);
+      await send(tools);
+      await send(tools);
+      expect(posted()).toHaveLength(1);
+    });
+
+    it("is refused through a mention too", async () => {
+      const { on, tools } = load("impl", "implementer");
+      wake(on);
+      const res = (await tools.fleet_mention.execute("1", { agents: ["rev"], text: "done" })) as { content: { text: string }[] };
+      expect(res.content[0].text).toContain("you have not used a tool");
+      expect(hub.tailMessages(20).filter((m) => m.from === "impl")).toEqual([]);
+    });
+
+    it("goes through once the agent has done something", async () => {
+      const { on, tools } = load("impl", "implementer");
+      wake(on);
+      on.tool_execution_start({ toolName: "write" }, ctx);
+      await send(tools);
+      expect(posted()).toHaveLength(1);
+    });
+
+    it("is not excused by reading, for an implementer", async () => {
+      const { on, tools } = load("impl", "implementer");
+      wake(on);
+      on.tool_execution_start({ toolName: "read" }, ctx);
+      expect((await send(tools)).content[0].text).toContain("you have not used a tool");
+    });
+
+    it("is excused by reading, for a reviewer", async () => {
+      const { on, tools } = load("rev", "reviewer");
+      wake(on);
+      on.tool_execution_start({ toolName: "read" }, ctx);
+      await send(tools);
+      expect(posted()).toHaveLength(1);
+    });
+
+    it("needs doing again after the next wake", async () => {
+      const { on, tools } = load("impl", "implementer");
+      wake(on);
+      on.tool_execution_start({ toolName: "write" }, ctx);
+      await send(tools);
+      wake(on);
+      expect((await send(tools)).content[0].text).toContain("you have not used a tool");
+    });
+
+    it("gets a new reminder after the next wake", async () => {
+      const { on, tools } = load("impl", "implementer");
+      wake(on);
+      await send(tools);
+      await send(tools);
+      wake(on);
+      expect((await send(tools)).content[0].text).toContain("you have not used a tool");
+    });
+
+    it("is left alone for a planner, whose work is the message", async () => {
+      const { on, tools } = load("impl", "planner");
+      wake(on);
+      await send(tools);
+      expect(posted()).toHaveLength(1);
+    });
+  });
+
+  it("reaches the group when the router handed over the work, as in the real run", () => {
+    run(load().on, routed("please review"), "APPROVE\n\nIt meets all requirements.");
+    expect(fromRev()).toMatchObject([{ to: "group", text: "APPROVE\n\nIt meets all requirements." }]);
+  });
+
+  it("goes to the channel the work came from", () => {
+    run(load().on, routed("please review", "dev"), "REQUEST CHANGES: add a test");
+    expect(fromRev()).toMatchObject([{ to: "dev", text: "REQUEST CHANGES: add a test" }]);
+  });
+
+  it("reaches the channel when the agent was addressed there", () => {
+    run(load().on, inbox(hub.appendMessage({ from: "impl", to: "dev", kind: "chat", text: "@rev please review" })), "APPROVE");
+    expect(fromRev()).toMatchObject([{ to: "dev", text: "APPROVE" }]);
+  });
+
+  it("starts with the verdict, so that the routing rules can read it", () => {
+    run(load().on, routed("please review"), "**APPROVE**: nothing to change");
+    expect(fromRev()[0].text).toBe("APPROVE: nothing to change");
+  });
+
+  it("still arrives after a restart, when the wake opens with a note", () => {
+    run(load().on, `You were restarted before you finished the work below.\n\n${routed("please review")}`, "APPROVE");
+    expect(fromRev()).toHaveLength(1);
+  });
+
+  it("uses the channel of the last message when one wake carries several", () => {
+    const first = routed("the first job", "group");
+    run(load().on, `${first}\n\n${routed("please review", "dev")}`, "APPROVE");
+    expect(fromRev()).toMatchObject([{ to: "dev" }]);
+  });
+
+  it("stays out of the group when it is anything but a verdict", () => {
+    const { on } = load();
+    for (const answer of ["Reviewed, and I APPROVE.", "Approve", "APPROVED", "I'll wait for the implementer."]) run(on, routed("please review"), answer);
+    expect(fromRev()).toEqual([]);
+  });
+
+  it("stays out of the group when no channel asked", () => {
+    const { on } = load();
+    run(on, inbox(hub.appendMessage({ from: "user", to: "rev", kind: "chat", text: "what do you think?" })), "APPROVE");
+    run(on, "typed straight into its chat", "APPROVE");
+    expect(fromRev()).toEqual([]);
+  });
+
+  it("is not sent twice when the agent sent something itself", async () => {
+    const { on, tools } = load();
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
+    await tools.fleet_send.execute("1", { to: "group", text: "APPROVE" });
+    on.message_end(said("APPROVE"), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toHaveLength(1);
+  });
+
+  it("counts fleet_mention as sending", async () => {
+    const { on, tools } = load();
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
+    await tools.fleet_mention.execute("1", { agents: ["impl"], text: "APPROVE" });
+    on.message_end(said("APPROVE"), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toHaveLength(1);
+  });
+
+  it("does not count a send that was refused", async () => {
+    const { on, tools } = load();
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
+    await tools.fleet_send.execute("1", { to: "nobody", text: "APPROVE" });
+    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.message_end(said("APPROVE"), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toMatchObject([{ to: "group" }]);
+  });
+
+  it("remembers the wake and what was sent across pi's retries", async () => {
+    const { on, tools } = load();
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
+    await tools.fleet_send.execute("1", { to: "group", text: "APPROVE" });
+    on.message_end({ message: { role: "assistant", stopReason: "error", errorMessage: "overloaded" } }, ctx);
+    on.agent_start({}, ctx); // the retry is a new low-level run, with no new prompt
+    on.message_end(said("APPROVE"), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toHaveLength(1);
+  });
+
+  it("arrives after a retry that succeeds", () => {
+    const { on } = load();
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
+    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.message_end({ message: { role: "assistant", stopReason: "error", errorMessage: "overloaded" } }, ctx);
+    on.agent_start({}, ctx);
+    on.message_end(said("APPROVE"), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toHaveLength(1);
+  });
+
+  it("is dropped when the run was stopped or failed: it may be half a thought", () => {
+    const { on } = load();
+    run(on, routed("please review"), "APPROVE", { aborted: true });
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
+    on.message_end({ message: { role: "assistant", stopReason: "error", errorMessage: "boom", content: [{ type: "text", text: "APPROVE" }] } }, ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toEqual([]);
+  });
+
+  it("forgets the channel when the run is over", () => {
+    const { on } = load();
+    run(on, routed("please review"), "It looks fine.");
+    on.agent_start({}, ctx);
+    on.message_end(said("APPROVE"), ctx); // a run with no prompt of its own, such as a follow-up from pi
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toEqual([]);
+  });
+
+  it("says where the rest is when it is too long for the bus", () => {
+    run(load().on, routed("please review"), `REQUEST CHANGES: ${"x".repeat(MAX_MESSAGE_LEN)}`);
+    const { text } = fromRev()[0];
+    expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE_LEN);
+    expect(text.startsWith("REQUEST CHANGES: xxx")).toBe(true);
+    expect(text).toContain("the rest is in rev's chat");
+  });
+
+  it("leaves a routing agent's own remarks in its chat", async () => {
+    const { on, tools } = load();
+    hub.upsertChannel({ name: "group", members: ["impl", "rev"], supervisor: "rev" });
+    const msg = hub.appendMessage({ from: "impl", to: "group", kind: "chat", text: "APPROVE" });
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: `Routing task for #group.\nNew message (id ${msg.id.slice(0, 8)}): impl said: "APPROVE"` }] } }, ctx);
+    await tools.route.execute("1", { channel: "group", respond: [], messageId: msg.id });
+    on.message_end(said("APPROVE noted."), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toEqual([]);
+  });
+
+  it("reaches the channel when a routing agent took the work itself", async () => {
+    const { on, tools } = load();
+    hub.upsertChannel({ name: "dev", members: ["impl", "rev"], supervisor: "rev" });
+    const msg = hub.appendMessage({ from: "impl", to: "dev", kind: "chat", text: "please review" });
+    on.agent_start({}, ctx);
+    on.message_end({ message: { role: "user", content: [{ type: "text", text: `Routing task for #dev.\nNew message (id ${msg.id.slice(0, 8)}): impl said: "please review"` }] } }, ctx);
+    await tools.route.execute("1", { channel: "dev", respond: ["rev"], messageId: msg.id });
+    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.message_end(said("APPROVE"), ctx);
+    on.agent_settled({ aborted: false }, ctx);
+    expect(fromRev()).toMatchObject([{ to: "dev", text: "APPROVE" }]);
   });
 });
 

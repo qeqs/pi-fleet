@@ -90,7 +90,9 @@ async function modelChecks(hub: Hub): Promise<Check[]> {
       const contextWindow = await probeContextWindow(model);
       if (contextWindow === undefined) return { status: "fail", label: "model", detail: `pi does not know "${model}" (see ~/.pi/agent/models.json)` };
       const test = await testModel(ROOT, hub.dir, hub.logFileFor("model-test"), model);
-      return test.ok ? { status: "ok", label: "model", detail: `${model} answers (${test.ms} ms, context window ${contextWindow})` } : { status: "fail", label: "model", detail: `${model} does not answer: ${test.error}` };
+      if (!test.ok) return { status: "fail", label: "model", detail: `${model} does not answer: ${test.error}` };
+      if (test.tools === false) return { status: "warn", label: "model", detail: `${model} answers but did not use a tool: agents on it can write text but not work` };
+      return { status: "ok", label: "model", detail: `${model} answers${test.tools ? " and uses tools" : ""} (${test.ms} ms, context window ${contextWindow})` };
     }),
   );
   return checks;

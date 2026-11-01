@@ -15,6 +15,7 @@ import { loadFleetConfig, agentSpecFromConfig, saveFleetConfig, configPath, isBu
 import { expandTemplate, templateNames, templateDescription, TEMPLATES } from "./templates.ts";
 import { discoverExtensions, readMcpConfig, writeMcpConfig } from "./pi-resources.ts";
 import { computeWakes } from "./wakes.ts";
+import { MAX_NUDGES, WATCH_PROMPT, closesJob, noteTool, parseWatchReply, startJob, watchPrompt, type WatchedJob } from "./watch.ts";
 import { availableModels, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
 import { RestartPolicy } from "./restart.ts";
 import { describeQuestion, parseAnswer, questionFrom, type Answer, type Question } from "./questions.ts";
@@ -39,6 +40,9 @@ const INTERRUPTED_NOTE = "You were restarted before you finished the work below.
 
 /** The dedicated router's name on the bus, and its inbox of messages to route. */
 const ROUTER = "router";
+
+/** How long a crew stays silent, with nothing running or waiting, before the router looks at it (0 = never). */
+const QUIET_MS = Number(process.env.PI_FLEET_QUIET_MS ?? 30000);
 
 function printBanner() {
   console.log("");
@@ -219,15 +223,24 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
 
   // the dedicated router: one bare pi per model, started on first use
   const routers = new Map<string, ModelRouter>();
-  function routerFor(channel: ChannelConfig): ModelRouter {
+  function routerFor(channel: ChannelConfig, systemPrompt?: string): ModelRouter {
     const info = hub.readAgents();
     const model = channel.supervisorModel ?? args.routerModel ?? fleetCfg?.routerModel ?? args.model ?? channel.members.map((m) => info[m]?.model).find(Boolean);
-    let router = routers.get(model ?? "");
+    const key = `${systemPrompt ? "watch " : ""}${model ?? ""}`;
+    let router = routers.get(key);
     if (!router) {
-      router = new ModelRouter(ROOT, hub.dir, hub.logFileFor(ROUTER), model);
-      routers.set(model ?? "", router);
+      router = new ModelRouter(ROOT, hub.dir, hub.logFileFor(ROUTER), model, systemPrompt);
+      routers.set(key, router);
     }
     return router;
+  }
+
+  function countRouterSpend(): void {
+    const spent = [...routers.values()].reduce((sum, r) => ({ tokens: sum.tokens + r.spent.tokens, cost: sum.cost + r.spent.cost }), { tokens: 0, cost: 0 });
+    const stats = { tokens: { total: spent.tokens }, cost: spent.cost };
+    hub.saveStats(ROUTER, stats);
+    gui?.broadcast("stats", { name: ROUTER, stats });
+    checkBudget();
   }
 
   /** Decide who acts on a channel message: a rule if one fits, else one short model call. */
@@ -240,11 +253,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       router.failure = err.message;
       return "";
     });
-    const spent = [...routers.values()].reduce((sum, r) => ({ tokens: sum.tokens + r.spent.tokens, cost: sum.cost + r.spent.cost }), { tokens: 0, cost: 0 });
-    const stats = { tokens: { total: spent.tokens }, cost: spent.cost };
-    hub.saveStats(ROUTER, stats);
-    gui?.broadcast("stats", { name: ROUTER, stats });
-    checkBudget();
+    countRouterSpend();
     const decision = parseRouterReply(reply, channel);
     if (decision) return decision;
     const respond = fallbackRoute(channel, known, [...agents.keys()]);
@@ -276,6 +285,56 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     });
   }
 
+  // What the person last asked a channel for, until it is done or a person has been told it is not.
+  let job: WatchedJob | null = null;
+  let checking = false;
+
+  function crewIsQuiet(current: WatchedJob): boolean {
+    if (hub.pausedReason() !== null || inRun.size > 0 || Date.now() - current.quietSince < QUIET_MS) return false;
+    if ([ROUTER, ...agents.keys()].some((name) => hub.readInbox(name).length > 0)) return false;
+    return !Object.values(hub.readAgents()).some((a) => (a.waitingUntil ?? 0) > Date.now());
+  }
+
+  /** A quiet crew may be done, or stuck. Ask, and if it is stuck, send the one who must act back to work. */
+  async function checkOnCrew(current: WatchedJob): Promise<void> {
+    const channel = hub.getChannel(current.task.to);
+    if (!channel || !current.ran) {
+      job = null;
+      return;
+    }
+    const known = Object.values(hub.readAgents());
+    const reply = await routerFor(channel, WATCH_PROMPT).ask(watchPrompt(current, channel, known, hub.tailMessages(200))).catch(() => "");
+    countRouterSpend();
+    if (job !== current) return; // a person wrote in the meantime
+    const verdict = parseWatchReply(reply, channel);
+    if (!verdict || verdict.finished) {
+      job = null;
+      return;
+    }
+    const what = verdict.say ?? "It has not been done.";
+    if (current.nudges === MAX_NUDGES) {
+      job = null;
+      hub.appendMessage({ from: "system", to: channel.name, kind: "system", text: `the crew has stopped with the work unfinished: ${what} It was reminded ${MAX_NUDGES} times. Send a message to continue, or try a stronger model in Settings → Models.` });
+      return;
+    }
+    const next = verdict.next && agents.has(verdict.next) ? verdict.next : fallbackRoute(channel, known, [...agents.keys()])[0];
+    if (!next) {
+      job = null;
+      return;
+    }
+    current.nudges++;
+    hub.appendMessage({ from: "system", to: channel.name, kind: "system", text: `the crew went quiet with the work unfinished, so the router asked ${next} to carry on (${current.nudges} of ${MAX_NUDGES})` });
+    hub.appendMessage({ from: ROUTER, to: next, kind: "chat", text: `The team has gone quiet and the work is not finished. ${what} Do it now with your tools, in this run: a message does no work.`, replyTo: current.task.id });
+  }
+
+  function watchCrew(): void {
+    if (!job || checking || QUIET_MS === 0 || !crewIsQuiet(job)) return;
+    checking = true;
+    void checkOnCrew(job)
+      .catch((err: Error) => print(`  could not check on the crew: ${err.message}`))
+      .finally(() => (checking = false));
+  }
+
   function wire(handle: AgentHandle, name: string) {
     handle.rpc.onEvent = (rec) => {
       const t = rec.type as string;
@@ -283,11 +342,14 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       if (t === "turn_end" || t === "agent_settled") void refreshStats(name, handle);
       if (t === "agent_start") {
         inRun.add(name);
+        if (job) job.ran = true;
         print(`  ⟳ [${name}] working…`);
       } else if (t === "tool_execution_start") {
         const tool = String(rec.toolName ?? "");
+        if (job) noteTool(job, name, tool);
         print(`  ⚙ [${name}] ${tool}`);
       } else if (t === "agent_settled") {
+        if (job) job.quietSince = Date.now();
         print(`  ✓ [${name}] settled — ${listAgentsLine()}`);
         hub.ackDelivered(name);
         forgetQuestionsOf(name);
@@ -719,6 +781,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         lookup.set(m.id, m);
         lookup.set(shortId(m.id), m);
         if (m.from === "user" && m.kind === "chat") hub.markSpend(m.id);
+        if (m.from === "user" && m.kind === "chat" && hub.targetKind(m.to) === "channel") job = startJob(m);
+        else if (job && closesJob(m, job)) job = null;
         print(formatMessage(m, lookup, channels));
         gui?.broadcast("message", m);
       }
@@ -737,6 +801,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       if (toRoute > 0) scheduleRouting();
       if (hub.rotateIfLarge(ROTATE_BYTES)) lookup.clear();
       syncPaused();
+      watchCrew();
     } catch {
       // ignore
     }

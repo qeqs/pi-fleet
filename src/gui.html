@@ -150,6 +150,12 @@
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .mrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:7px;margin-bottom:6px}
   .mrow .nm{font-weight:600}
+  .mrow[hidden]{display:none}
+  #modelRows{max-height:34vh;overflow-y:auto}
+  .modelfilter{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .modelfilter input.mfilter{flex:1;min-width:0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:13px}
+  .modelfilter .chk{padding:0;white-space:nowrap;color:var(--muted);font-size:12px}
+  .modelfilter .stat{white-space:nowrap}
   .mrow .desc{color:var(--muted);font-size:12px;flex:1}
   .mrow button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
   .mrow button:hover{background:#262c36}
@@ -258,6 +264,8 @@
     mcp: { mcpServers: {} },
     extensions: { available: [], selected: {} },
     settingsTab: "fleet",
+    modelFilter: "",       // what the model lists are narrowed to, by name
+    freeOnly: false,       // and whether they show free models alone
     firstModel: "",        // the model typed on the first-run screen
     firstError: ""         // why the crew did not start, as safe HTML
   };
@@ -574,15 +582,36 @@
     return '<div class="msg ' + whoCls + '"><div class="who">' + esc(m.from) + target + '<span class="t">' + time(m.ts) + "</span>" + reply + '</div><div class="bubble">' + md(m.text) + "</div></div>";
   }
 
-  function renderFirstRun() {
-    var html = '<div class="firstrun"><h2>Start your fleet</h2><p>Pick a crew. They start in this project\'s folder, and you can change them later in Settings.</p>';
+  // OpenRouter's naming. Pi's prices cannot say: its image models and routers are listed at zero too.
+  function isFree(model) { return /[:\/]free$/i.test(model); }
+
+  function modelShown(model) {
+    var name = model.toLowerCase();
+    var words = state.modelFilter.toLowerCase().split(/\s+/).filter(Boolean);
+    return (!state.freeOnly || isFree(model)) && words.every(function (w) { return name.indexOf(w) >= 0; });
+  }
+
+  function modelFilterHtml(id) {
+    if (state.models.length <= MANY_MODELS) return "";
+    var free = state.models.filter(isFree).length;
+    return '<div class="modelfilter"><input id="' + id + '" class="mfilter" placeholder="Filter by name" autocomplete="off" value="' + esc(state.modelFilter) + '">' +
+      (free ? '<label class="chk"><input type="checkbox" class="mfree"' + (state.freeOnly ? " checked" : "") + "><span>Free only (" + free + ")</span></label>" : "") + "</div>";
+  }
+
+  function firstModelOptions() {
     // the first of several could be a paid model, or one that is switched off: that is the person's call
     var chosen = state.firstModel || state.defaultModel || (state.models.length === 1 ? state.models[0] : "");
     var models = chosen && state.models.indexOf(chosen) < 0 ? [chosen].concat(state.models) : state.models;
-    var options = models.map(function (m) { return '<option value="' + esc(m) + '"' + (m === chosen ? " selected" : "") + ">" + esc(m) + "</option>"; }).join("");
-    if (!models.length) options = '<option value="">pi\'s default model</option>';
-    else if (!chosen) options = '<option value="" selected>Choose a model…</option>' + options;
-    html += '<label for="firstModel">Model</label><select id="firstModel">' + options + "</select>";
+    if (!models.length) return '<option value="">pi\'s default model</option>';
+    // what is chosen stays, or narrowing the list would change the choice
+    var shown = models.filter(function (m) { return m === chosen || modelShown(m); });
+    var options = shown.map(function (m) { return '<option value="' + esc(m) + '"' + (m === chosen ? " selected" : "") + ">" + esc(m) + "</option>"; }).join("");
+    return chosen ? options : '<option value="" selected>' + (shown.length ? "Choose a model…" : "No model matches") + "</option>" + options;
+  }
+
+  function renderFirstRun() {
+    var html = '<div class="firstrun"><h2>Start your fleet</h2><p>Pick a crew. They start in this project\'s folder, and you can change them later in Settings.</p>';
+    html += '<label for="firstModel">Model</label>' + modelFilterHtml("firstFilter") + '<select id="firstModel">' + firstModelOptions() + "</select>";
     html += '<div class="stat" style="margin:4px 0 12px">Not listed? <button class="plain" data-open-models="1">Add one in Settings → Models</button></div>';
     state.templates.forEach(function (t) {
       html += '<div class="template"><b>' + esc(t.name) + '</b><span class="tdesc">' + esc(t.description) + '</span><button data-template="' + esc(t.name) + '">Start</button></div>';
@@ -593,6 +622,7 @@
   function renderConversation() {
     var wasAtBottom = convEl.scrollHeight - convEl.scrollTop - convEl.clientHeight < 60;
     var scrollTop = convEl.scrollTop;
+    var filtering = document.activeElement && document.activeElement.id === "firstFilter";
     var html = "";
     if (!agentNames().length && state.templates.length) {
       html = renderFirstRun();
@@ -616,6 +646,8 @@
     }
     convEl.innerHTML = html;
     convEl.scrollTop = wasAtBottom ? convEl.scrollHeight : scrollTop;
+    var filter = filtering && document.getElementById("firstFilter");
+    if (filter) { filter.focus(); filter.setSelectionRange(filter.value.length, filter.value.length); }
   }
 
   function conversationClicked(e) {
@@ -652,8 +684,8 @@
     showFirstError("Checking the model…");
     post("/models/test", { model: model }).then(function (r) {
       var test = r.result || { ok: false, error: r.error };
-      if (test.ok) return launch();
-      showFirstError(esc(model || "The default model") + " did not answer: " + esc(test.error) +
+      if (test.ok && test.tools !== false) return launch();
+      showFirstError(esc(model || "The default model") + (test.ok ? " answers, but did not use a tool: agents on it can write text but not work." : " did not answer: " + esc(test.error)) +
         '<div style="margin-top:8px"><button class="plain" data-template="' + esc(template) + '" data-untested="1">Start anyway</button></div>');
     });
   }
@@ -851,6 +883,7 @@
   }
 
   var KEY_PROVIDERS = ["anthropic", "openai", "google", "openrouter", "deepseek", "groq", "mistral", "xai"];
+  var MANY_MODELS = 8; // a list this short needs no filter
 
   function openSettings(tab) {
     state.settingsTab = tab;
@@ -870,6 +903,27 @@
       '<span class="stat"><button class="plain" data-do="test">Test</button> <button class="plain" data-do="default">Use by default</button> <button class="plain" data-do="router">Use for routing</button></span></div>';
   }
 
+  // rows stay in the page while hidden, so a test result in one survives a change of filter
+  function applyModelFilter() {
+    var rows = [].slice.call(document.querySelectorAll("#modelRows .mrow"));
+    rows.forEach(function (row) { row.hidden = !modelShown(row.getAttribute("data-model")); });
+    var count = document.getElementById("modelCount");
+    if (count) count.textContent = rows.filter(function (row) { return !row.hidden; }).length + " of " + rows.length;
+    var select = document.getElementById("firstModel");
+    if (select) select.innerHTML = firstModelOptions();
+  }
+
+  function modelFilterChanged(e) {
+    var box = e.target;
+    if (box.classList.contains("mfilter")) state.modelFilter = box.value;
+    else if (box.classList.contains("mfree")) state.freeOnly = box.checked;
+    else return;
+    // the first-run screen can be open behind Settings, with a filter of its own
+    document.querySelectorAll(".mfilter").forEach(function (f) { if (f !== box) f.value = state.modelFilter; });
+    document.querySelectorAll(".mfree").forEach(function (f) { if (f !== box) f.checked = state.freeOnly; });
+    applyModelFilter();
+  }
+
   function renderModelsTab() {
     Promise.all([get("/models"), get("/config")]).then(function (all) {
       if (state.settingsTab !== "models") return;
@@ -879,6 +933,7 @@
       fillModelList();
       mbodyEl.innerHTML = "<h3>Models</h3>" +
         '<div class="stat" style="margin-bottom:10px">Agents reach models through pi, and this is the same list pi uses. Choices here apply to agents started afterwards.</div>' +
+        modelFilterHtml("modelFilter").replace("</div>", '<span class="stat" id="modelCount"></span></div>') +
         '<div id="modelRows">' + (models.length ? models.map(function (m) { return modelRow(m, config); }).join("") : '<div class="stat">No models yet. Add one below.</div>') + "</div>" +
         '<div class="stat" id="modelStatus" style="margin:6px 0"></div>' +
         "<h3>Add a server</h3><div class=\"stat\">Any server with an OpenAI-style API: Ollama, LM Studio, vLLM, or a hosted one.</div>" +
@@ -892,6 +947,7 @@
         '<datalist id="keyProviders">' + KEY_PROVIDERS.map(function (p) { return '<option value="' + p + '">'; }).join("") + "</datalist></div>" +
         '<div class="field"><label>API key</label><input id="keyValue" type="password" autocomplete="off"></div></div>' +
         '<button class="plain" id="keyAdd">Save key</button>';
+      applyModelFilter();
       document.getElementById("modelRows").addEventListener("click", function (e) { modelAction(e, config); });
       document.getElementById("provAdd").onclick = addProvider;
       document.getElementById("keyAdd").onclick = addKey;
@@ -909,8 +965,8 @@
       result.textContent = "Asking…";
       return post("/models/test", { model: model }).then(function (r) {
         var test = r.result || { ok: false, error: r.error };
-        result.className = "mres " + (test.ok ? "good" : "bad");
-        result.textContent = test.ok ? "Answers, " + (test.ms / 1000).toFixed(1) + " s" : test.error;
+        result.className = "mres " + (test.ok && test.tools !== false ? "good" : "bad");
+        result.textContent = !test.ok ? test.error : test.tools === false ? "Answers, but did not use a tool: agents on it can write text but not work" : "Answers" + (test.tools ? " and uses tools" : "") + ", " + (test.ms / 1000).toFixed(1) + " s";
       });
     }
     var change = action === "default" ? { defaultModel: model } : { routerModel: model };
@@ -1309,6 +1365,7 @@
     state.firstModel = e.target.value;
     showFirstError("");
   });
+  document.addEventListener("input", modelFilterChanged);
   headerEl.addEventListener("change", function (e) {
     if (e.target.id !== "modelPick") return;
     var name = state.selected;

@@ -140,6 +140,8 @@ export interface AgentInfo {
   handled?: BusCursor;
   /** the agent's own git worktree and branch, if it works in one */
   worktree?: Worktree;
+  /** when the agent tries its model again after an error: it is not stuck until then */
+  waitingUntil?: number;
 }
 
 export class Hub {

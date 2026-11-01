@@ -24,7 +24,7 @@ The installers are not code-signed, which is why these warnings appear.
 ### Command line
 
 ```bash
-npm install -g github:qeqs/pi-fleet#v1.1.0
+npm install -g github:qeqs/pi-fleet#v1.2.0
 ```
 
 This gives you the `fleet` command. Check it with:
@@ -39,7 +39,8 @@ pi-fleet runs [pi](https://pi.dev), and uses whatever models pi knows. Set this 
 the command line and the desktop app will find it in `~/.pi`.
 
 **In the app.** Open **Settings → Models** to add a server or an API key, and press **Test** to check
-that a model answers. You can also do it from the terminal, as below.
+that a model answers. A key can bring hundreds of models: filter them by name, or tick **Free only**.
+You can also do it from the terminal, as below.
 
 **A hosted provider.** Install pi and sign in:
 
@@ -142,8 +143,11 @@ use `/diff impl1` and `/merge impl1` in the terminal. See [Parallel work](README
 | A `fail` from `fleet doctor` | Follow the message on that line. |
 | `pi does not know "provider/model"` | Finish step 2, and use the full `provider/id` name. |
 | `Model error: Connection error` | Nothing is answering at the model's address. Start its server, or test another in Settings → Models. |
+| `got a model error ... It tries again in 30s` | The fleet tries again by itself, three times over about 8 minutes. Your next message or Stop all cancels that. |
 | A hosted model answers `403`, or cannot be reached | The desktop app uses your system proxy. On the command line, set `HTTPS_PROXY` yourself. |
 | The agents stay idle after a task | Check for a notice in `#group`, such as a pause or a model error. Send any message to lift a pause. |
+| `the crew has stopped with the work unfinished` | The model was reminded twice and still only talked. Send a message to try again, or test a stronger model in Settings → Models. |
+| `answers, but did not use a tool` | The server ignores tools, so agents on it can write text but not work. Turn on tool calling in the server, or choose another model. |
 | `another supervisor is already running` | Another fleet is using this folder. Stop it, or pass `--dir` to use a separate one. |
 | Agents still running after you quit | `fleet list` shows them, and `fleet stop all` stops them. |
 

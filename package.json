@@ -1,6 +1,6 @@
 {
   "name": "pi-fleet",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "description": "Multi-agent fleet for pi: named concurrent agent sessions, group chat, inter-agent messaging, OpenSpec coordination",
   "license": "Apache-2.0",

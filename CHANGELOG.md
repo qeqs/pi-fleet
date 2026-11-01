@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.2.0
+
+- A verdict reaches the group even if a model leaves it in its own chat. When an agent woken by a
+  channel ends its run without sending anything, and its last text starts with `APPROVE` or
+  `REQUEST CHANGES`, that text is posted to the channel. Any other final text stays in the agent's
+  chat, to keep the group quiet.
+- Settings → Models and the first-run screen filter models by name, and **Free only** shows the free
+  ones. The list in Settings scrolls by itself, so a key that adds 400 models no longer pushes the
+  add-a-server and add-a-key forms out of reach.
+- The desktop window appears at once and says which project is starting. Before, nothing showed
+  until the fleet answered: about 2 seconds on a later launch, and about 20 on the first launch
+  after an install. File → Open Project waits until the project is up.
+- A run that ends in a model error is tried again by the fleet, after 30 seconds, 2 minutes and
+  5 minutes, and the channel says so. That covers connection errors, 429, 5xx and provider errors,
+  not a bad key, an unknown model or a limit per day. A person's message, Stop all, a pause or a new
+  wake cancels a waiting try. Set `PI_FLEET_RETRY_WAITS` to change the waits, or leave it empty for
+  none.
+- A crew that stops before the work is done no longer just goes quiet. After 30 seconds of silence
+  with nothing running or waiting, the router looks at the task, the tools each agent really used
+  and what was said. If the work is unfinished it sends one member back to work, at most twice, and
+  then tells you. Set `PI_FLEET_QUIET_MS` to change the wait, or to `0` to turn this off.
+- Weak models work instead of reporting work. The text that wakes an agent used to end by telling it
+  to reply; it now says to do the work first, because a message does no work. An implementer or
+  reviewer that sends a message before using a tool is refused once, and a verdict left in a chat
+  counts only from an agent that looked at something.
+- Testing a model also checks that it really uses a tool, in Settings → Models, before a crew
+  starts, and in `fleet doctor`. A server can accept tools and ignore them, and agents on such a
+  model can only write text.
+- An agent that hands off and keeps going is stopped much sooner. The tool result tells it that a
+  reply will wake it, a run may send 6 messages with nothing new coming in, and one that ignores
+  two refusals is stopped. On a real model one such run sent 11 messages and spent 606k tokens.
+- Fixed: when the fleet stopped a run, the chat also said it had stopped on a model error.
+- Fixed: after a failed start the desktop app never finished quitting.
+
 ## 1.1.0
 
 - Settings has a Models tab: add a server or an API key, test that a model answers, and choose the

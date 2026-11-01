@@ -103,8 +103,23 @@ fleet> # refactor the parser and add tests
   its channels move to a running member. A run that ends in a model error says so, and so does
   a model that stays silent mid-turn for 5 minutes (`PI_FLEET_STALL_MS`, `0` turns it off; only
   the wait for the model is timed, not tools). Only one supervisor can attach to a hub.
+- **Models that are away for a while**: after pi's own quick retries, a run that ended in a
+  connection error, a 429, a 5xx or a provider error is tried again by the fleet after 30 seconds,
+  2 minutes and 5 minutes (`PI_FLEET_RETRY_WAITS`, in milliseconds), and only then given up on. A
+  bad key, an unknown model or a limit per day is not. A person's message, Stop all, a pause or a
+  new wake cancels a waiting try. The wait does not survive the agent itself crashing.
+- **Models that talk instead of working**: a message reaches the chat only through a tool call, so
+  a model that chats can use tools; a weak one just reports work instead of doing it. Agents are
+  told that a message does no work, and the first message an implementer or reviewer sends after a
+  wake is refused until it has used a tool. If it sends again, it goes through: it may be a real
+  question. When a crew has been silent for 30 seconds (`PI_FLEET_QUIET_MS`, `0` turns it off) with
+  nothing running or waiting, and no approval of someone else's work has ended the job, the router
+  gets the task, the tools each agent really used and what was said. It either leaves the crew
+  alone or sends one member back to work, at most twice, and then tells you that the work is
+  unfinished. This needs a supervisor, and it watches work given to a channel, not a direct message.
 - **Message limits**: a message is refused, never cut, above `MAX_MESSAGE_LEN` chars (default
   2000, override with `PI_FLEET_MAX_MSG`): you see the reason, and an agent is told to split it.
+  A run may send 6 messages with nothing new coming in, and is stopped if it ignores two refusals.
 - **Surviving restarts**: agents keep their conversation across a restart (`--fresh` starts new
   ones). A wake is written to a per-agent inbox before it is sent and cleared once the agent
   settles, and the supervisor saves its place on the bus, so a crash at any point loses no
@@ -126,7 +141,7 @@ fleet> # refactor the parser and add tests
 [GETTING_STARTED.md](GETTING_STARTED.md) goes from nothing to a finished task. In short:
 
 ```bash
-npm install -g github:qeqs/pi-fleet#v1.1.0
+npm install -g github:qeqs/pi-fleet#v1.2.0
 ```
 
 or use a desktop installer from the [releases page](https://github.com/qeqs/pi-fleet/releases/latest),
@@ -339,7 +354,9 @@ The optional `role` segment injects a role-specific prompt preset:
   ends the job.
 
 Every agent is told to send a message only to hand off work, ask something that blocks it, or
-report a finished result, and never just to acknowledge.
+report a finished result, and never just to acknowledge. A weak model can still write its verdict
+in its own chat instead of sending it, so the fleet posts that verdict to the channel the work
+came from. Any other text stays in the agent's chat.
 
 ## Local / weak models
 

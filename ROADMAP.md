@@ -155,15 +155,28 @@ the group chat had only ever run small tasks.
 
 **Done when:** the `v1.1.0` installer, on a real machine, takes a task from the desktop app to `APPROVE` on a real model, and a model that cannot answer says why.
 
+## 9. Real models, good and weak
+
+1.1's last check showed a planner that never stopped, and its owner's own test showed models that
+chat and tag each other and do no work.
+
+- [x] A verdict must reach the group: a weak model can leave `APPROVE` in its own chat, and the group just goes quiet. Other final text stays in the agent's chat, to keep the group quiet
+- [x] Filter the model lists by name, and make free models easy to find: an OpenRouter key adds about 400 rows
+- [x] Show the desktop window at once: the first launch after an install takes about 20 seconds to appear, and a later one about 2, with nothing on screen until then
+- [x] Retry by itself when a model is unavailable: pi's own retries are over in seconds, and then the chain waits for a person
+- [x] Brake an agent that hands off and keeps going: one real run sent 11 varied messages for 606k tokens, and the brake's own abort was reported as a model error
+- [x] Get work out of weak models: they can call tools, since every chat message is a tool call, but they report work instead of doing it. Refuse a message from an agent that has used no tool, have the router send a quiet crew back to work, and test that a model really uses a tool
+
+**Done when:** the `v1.2.0` release passes on Windows, Linux and macOS, and its installer takes a task to `APPROVE` on a real model.
+
 ## Next
 
 Not scheduled yet.
 
-- [ ] A verdict or a final answer must reach the group: a weak model can leave `APPROVE` in its own chat, and the group just goes quiet
-- [ ] Filter the model lists by name, and make free models easy to find: an OpenRouter key adds about 400 rows
-- [ ] Show the desktop window at once: on Windows it takes about 20 seconds to appear, with nothing on screen until then
+- [ ] Run a crew on a real weak model: the refusal and the watcher have only met a scripted one, and `openai/gpt-4o` needs credit on OpenRouter
 - [ ] Find out which tools agents are missing: the built-in ones were enough in the real runs so far
 - [ ] Spend less on context: about 96% of the tokens in a real run were context sent again on each turn, so try prompt caching on providers that have it
+- [ ] Stop a planner going on after its handoff: on a real model it checked its plan again and sent the same work a second time, and its status posts woke the implementer and the reviewer. It spent 257k of the run's 490k tokens
 - [ ] Keep small jobs small: the planner still writes an OpenSpec proposal for a one-page app
 - [ ] Publish to the npm registry, which needs the owner's account
 - [ ] Sign the installers, which needs certificates in the owner's name

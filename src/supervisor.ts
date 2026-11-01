@@ -54,6 +54,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   const agents = new Map<string, AgentHandle>();
   const spawnedHere = new Set<string>(); // not re-attached: this run answers for them if the start fails
   const stopping = new Set<string>(); // stopped on purpose, so their exit is not a crash
+  const inRun = new Set<string>(); // working now, so new messages wait for them to settle
   const restarts = new Map<string, RestartPolicy>();
   const questions = new Map<string, Question>(); // waiting for the human, by request id
   const leanCache = new Map<string, number | undefined>();
@@ -281,6 +282,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       if (t === "extension_ui_request") return onQuestion(name, rec);
       if (t === "turn_end" || t === "agent_settled") void refreshStats(name, handle);
       if (t === "agent_start") {
+        inRun.add(name);
         print(`  ⟳ [${name}] working…`);
       } else if (t === "tool_execution_start") {
         const tool = String(rec.toolName ?? "");
@@ -289,6 +291,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         print(`  ✓ [${name}] settled — ${listAgentsLine()}`);
         hub.ackDelivered(name);
         forgetQuestionsOf(name);
+        inRun.delete(name);
+        schedulePump(name); // whatever arrived during the run
       }
       // keep the GUI status badge in sync with the run state
       if (t === "agent_start") gui?.broadcast("status", { name, status: "busy" });
@@ -298,6 +302,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     };
     handle.rpc.onExit = (code) => {
       agents.delete(name);
+      inRun.delete(name);
       forgetQuestionsOf(name);
       print(`  ✕ [${name}] exited (${code})`);
       if (shuttingDown || stopping.delete(name)) return;
@@ -672,14 +677,22 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
 
   const waitingFor = new Set<string>(); // agents already reported as not running
 
-  /** Deliver an agent's inbox in order. What was accepted but unfinished comes back after a restart. */
+  /**
+   * Deliver everything an agent has waiting as one wake. During a run its messages wait
+   * for it to settle, or each would become a run of its own, answering things it has
+   * already dealt with. What was accepted but unfinished comes back after a restart.
+   */
   async function pumpInbox(name: string, restarted: boolean): Promise<void> {
-    for (const entry of hub.readInbox(name)) {
-      if (entry.delivered && !restarted) continue;
-      const text = entry.delivered ? `${INTERRUPTED_NOTE}\n\n${entry.text}` : entry.text;
-      if (!(await deliverWake(name, text))) return;
-      hub.markDelivered(name, entry.id);
+    if (inRun.has(name) && !restarted) return;
+    const entries = hub.readInbox(name).filter((e) => restarted || !e.delivered);
+    if (entries.length === 0) return;
+    inRun.add(name); // before the prompt: it can settle before the prompt's reply is read
+    const text = entries.map((e) => (e.delivered ? `${INTERRUPTED_NOTE}\n\n${e.text}` : e.text)).join("\n\n");
+    if (!(await deliverWake(name, text))) {
+      inRun.delete(name);
+      return;
     }
+    for (const entry of entries) hub.markDelivered(name, entry.id);
   }
 
   // One queue per agent, so a retry cannot let a later message overtake it.
@@ -804,7 +817,10 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     if (model) args.model = model;
     for (const a of crew) await spawnAndTrack(a.name, baseCwd, model ?? args.model, a.role);
     refreshDefaultChannel();
-    if (!loadFleetConfig(hub.dir)) saveFleetConfig(hub.dir, { defaultModel: model, agents: crew });
+    if (loadFleetConfig(hub.dir)) return;
+    // a person can pick a model for the first agent while the last one is still starting
+    const running = hub.readAgents();
+    saveFleetConfig(hub.dir, { defaultModel: model, agents: crew.map((a) => (running[a.name]?.model && running[a.name].model !== model ? { ...a, model: running[a.name].model } : a)) });
   }
 
   /** Change a running agent's model, and keep the change for the next start. */

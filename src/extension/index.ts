@@ -19,7 +19,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 import { onPath } from "../programs.ts";
-import { Hub, shortId, messageTooLong, addressLabel, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type FleetMessage, type ChannelConfig } from "../hub.ts";
+import { Hub, shortId, messageTooLong, addressLabel, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type FleetMessage, type ChannelConfig, addressedAgents, mentionedAgents } from "../hub.ts";
 import { packageBinArgv } from "../rpc.ts";
 
 const POLL_MS = Number(process.env.PI_FLEET_POLL_MS ?? 3000);
@@ -55,13 +55,24 @@ export const TASKBOARD: "openspec" | "beads" = process.env.PI_FLEET_TASKBOARD ==
 const TASKBOARD_PLAN =
   TASKBOARD === "beads"
     ? "Use the beads tool (bd CLI) to plan/track work: create issues (\"create <title>\"), list them (\"list\"), show one (\"show <id>\"), and close them when done (\"close <id>\"). Run `bd init` once in the project if there is no beads database yet."
-    : "Use the openspec tool for planning and tracking work: create change proposals under openspec/changes/, keep tasks.md updated, validate before finishing, archive when done.";
+    : "For work of several steps, use the openspec tool for planning and tracking: create change proposals under openspec/changes/, keep tasks.md updated, validate before finishing. A small job needs no change proposal.";
 
 /** Task-board-specific quality gate (for the system prompt). */
 const TASKBOARD_GATE =
   TASKBOARD === "beads"
     ? "Quality gate: before marking an issue done, run \"beads list\" to confirm its state and post the result to the thread."
-    : "Quality gate: run `openspec validate <id>` and post the result before marking a task done.";
+    : "Quality gate: if the work has a change proposal, run `openspec validate <id>` before marking a task done.";
+
+/** A message that opens with who it is for. Models often write the names themselves too. */
+export function mentionText(targets: string[], text: string): string {
+  const body = text.replace(/^(?:\s*@[A-Za-z0-9_-]+[\s,:]*)+/, (names) => (mentionedAgents(names).every((a) => targets.includes(a)) ? "" : names));
+  return `${targets.map((a) => `@${a}`).join(" ")} ${body}`;
+}
+
+/** `openspec init` also writes skills and prompts for each AI tool it detects: a dozen files nobody asked for. */
+export function openspecArgs(args: string[]): string[] {
+  return args[0] === "init" && !args.includes("--tools") ? [...args, "--tools", "none"] : args;
+}
 
 /** Role-specific instructions appended to the fleet prompt (planner/implementer/reviewer). */
 export function rolePrompt(role: string | undefined): string {
@@ -72,21 +83,22 @@ export function rolePrompt(role: string | undefined): string {
       return `
 
 Your role: PLANNER.
-- Break goals into concrete, verifiable tasks and record them in the ${tb} task board.
-- Assign work by @mentioning the right agent (e.g. an implementer). Do NOT implement code yourself.
-- Track progress in the bus; when an implementer reports a task done, confirm and move to the next task or request review.`;
+- Break goals into concrete, verifiable tasks. Record them in the ${tb} task board if there are several. Check any worked example or number you put in a plan.
+- Give the work to the implementer in one message, with everything it needs. Do NOT implement code yourself, and leave the reviewer out: the implementer asks for review when there is something to review.
+- Then you are finished unless someone asks you something. The reviewer's verdict ends the job, so never announce that it is done.`;
     case "implementer":
       return `
 
 Your role: IMPLEMENTER.
-- Implement the tasks assigned to you. Follow the quality gate: ${validate} and post the result before marking a task done.
-- When a task is complete, @mention the reviewer (or the planner) with a summary of what changed and where.`;
+- Implement the tasks assigned to you. Follow the quality gate: ${validate} before marking a task done.
+- When everything assigned to you is done, @mention the reviewer once, with a summary of what changed and where.`;
     case "reviewer":
       return `
 
 Your role: REVIEWER.
-- When asked to review work, inspect the change (files + ${tb} task board), ${validate}, and smoke-test where practical.
-- Reply with exactly \`APPROVE\` or \`REQUEST CHANGES: <specific, actionable reasons>\`. Be concrete.`;
+- You act when asked to review, and only then. Do not announce a review or report on one in progress.
+- Inspect the change (files + ${tb} task board), ${validate}, and smoke-test where practical. Finish all of it before you reply.
+- Then send one verdict, starting with \`APPROVE\` or \`REQUEST CHANGES: <specific, actionable reasons>\`. APPROVE means nothing is left to check and ends the job. If the work has a change proposal, archive it first.`;
     case "supervisor":
       return `
 
@@ -116,7 +128,8 @@ export function fleetPrompt(name: string, lean: boolean, roster: string, role?: 
 Fleet (you are "${name}"): ${roster}
 - You are woken when messages arrive (@mentions of you, or a routing supervisor directs one to you).
 - Reply with fleet_send: to="group" or to a channel name, or to="<agent>". Keep it short.
-- Use fleet_mention to @mention one or more agents — only they wake.
+- Hand work to an agent with fleet_mention, or start your message with their @name. A name later in a message wakes nobody.
+- Send a message only to hand off work, ask something that blocks you, or report a finished result. Never just acknowledge: if a message asks nothing of you, end your turn.
 - To reply to a specific message, pass its id (in parentheses) as replyTo.
 - ${TASKBOARD_PLAN}
 - ${TASKBOARD_GATE}
@@ -131,7 +144,8 @@ Fleet rules:
 - You are woken automatically when new messages arrive. Check them with fleet_inbox if you need history.
 - Reply with fleet_send: to="group" or a channel name for a shared channel, to="<agent name>" for a direct message. Keep messages concise and actionable.
 - In a supervised channel, a supervisor routes work to you; when you finish, send your result back to that channel.
-- Use fleet_mention to @mention one or more agents in the group — only the mentioned agents wake.
+- To hand work to an agent, use fleet_mention, or start your message with their @name. A name later in a message wakes nobody.
+- Send a message only to hand off work, to ask something that blocks you, or to report a finished result. Do not acknowledge, thank, confirm or repeat yourself: if a message asks nothing of you, end your turn without sending anything.
 - Each message has a short id in parentheses. To reply to a specific message, pass that id as replyTo — this threads the conversation.
 - ${TASKBOARD_PLAN}
 - **${TASKBOARD_GATE}**
@@ -149,15 +163,6 @@ export function buildLookup(hub: Hub): Map<string, FleetMessage> {
   return map;
 }
 
-/** Agent names @mentioned in a message (e.g. "@bob" -> ["bob"]). */
-export function mentionedAgents(text: string): string[] {
-  const out: string[] = [];
-  const re = /@([A-Za-z0-9_-]+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) out.push(m[1]);
-  return out;
-}
-
 /** The channel's routing supervisor: explicit, else the first member. */
 export function defaultSupervisor(channel: ChannelConfig): string | undefined {
   if (channel.supervisor) return channel.supervisor;
@@ -167,7 +172,7 @@ export function defaultSupervisor(channel: ChannelConfig): string | undefined {
 /**
  * How (and whether) an agent is woken by a message, given the channel set.
  *  - DM (to === name): wake, normal mode.
- *  - channel message @mentioning members: ONLY those members wake, normal mode
+ *  - channel message addressed to members: ONLY those members wake, normal mode
  *    (the sender already chose the addressee, so no routing turn is spent).
  *  - channel with a supervisor: ONLY the supervisor wakes, in "route" mode
  *    (it decides who else should see the message and updates the summary).
@@ -189,8 +194,8 @@ export function wakeDecision(
   if (m.to === name) return { wake: true, mode: "normal" };
   const channel = channels.find((c) => c.name === m.to);
   if (channel) {
-    const mentions = mentionedAgents(m.text).filter((a) => channel.members.includes(a));
-    if (mentions.length > 0) return { wake: mentions.includes(name), mode: "normal" };
+    const addressed = addressedAgents(m).filter((a) => channel.members.includes(a));
+    if (addressed.length > 0) return { wake: addressed.includes(name), mode: "normal" };
     const sup = defaultSupervisor(channel);
     if (sup) {
       return name === sup ? { wake: true, mode: "route", channel } : { wake: false, mode: "normal" };
@@ -199,14 +204,14 @@ export function wakeDecision(
   }
   // legacy "group" with no channel config: broadcast (backward compatible)
   if (m.to === DEFAULT_CHANNEL) {
-    const mentions = mentionedAgents(m.text);
-    if (mentions.length > 0) return { wake: mentions.includes(name), mode: "normal" };
+    const addressed = addressedAgents(m);
+    if (addressed.length > 0) return { wake: addressed.includes(name), mode: "normal" };
     if (m.replyTo) {
       const orig = lookup.get(m.replyTo);
       if (orig) {
         const participants = new Set<string>([orig.from]);
         if (orig.to !== DEFAULT_CHANNEL) participants.add(orig.to);
-        for (const a of mentionedAgents(orig.text)) participants.add(a);
+        for (const a of addressedAgents(orig)) participants.add(a);
         return { wake: participants.has(name), mode: "normal" };
       }
     }
@@ -298,7 +303,7 @@ export function formatInbox(messages: FleetMessage[], lookup: Map<string, FleetM
   });
   return (
     `New fleet messages for you:\n${lines.join("\n")}\n\n` +
-    `Respond with fleet_send (to="group" or to a specific agent) if a reply is needed. ` +
+    `Reply with fleet_send (to="group" or to a specific agent) only if this needs something from you. ` +
     `To reply to a specific message, pass its id (in parentheses) as replyTo.`
   );
 }
@@ -673,13 +678,14 @@ export default function (pi: ExtensionAPI) {
         };
       }
       const mentions = targets.map((a) => `@${a}`).join(" ");
-      const tooLong = messageTooLong(`${mentions} ${params.text}`);
+      const text = mentionText(targets, params.text);
+      const tooLong = messageTooLong(text);
       if (tooLong) return refused(`Not sent: ${tooLong}`);
       const msg = hub.appendMessage({
         from: name,
         to: "group",
         kind: "chat",
-        text: `${mentions} ${params.text}`,
+        text,
         replyTo: params.replyTo,
       });
       return {
@@ -690,7 +696,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Task-board tool: runs the selected CLI (openspec by default, or `bd` for beads).
-  const makeTaskBoardTool = (name: string, label: string, description: string, bin: () => string[]) =>
+  const makeTaskBoardTool = (name: string, label: string, description: string, bin: () => string[], prepare = (args: string[]) => args) =>
     defineTool({
       name,
       label,
@@ -703,7 +709,7 @@ export default function (pi: ExtensionAPI) {
         const result = await new Promise<{ ok: boolean; output: string }>((resolve) => {
           const child = execFile(
             file,
-            [...prefix, ...params.args.split(/\s+/).filter(Boolean)],
+            [...prefix, ...prepare(params.args.split(/\s+/).filter(Boolean))],
             { cwd: process.cwd(), timeout: 120000, maxBuffer: 1024 * 1024, windowsHide: true },
             (err, stdout, stderr) => {
               const output = [stdout, stderr].filter(Boolean).join("\n").trim() || "(no output)";
@@ -732,6 +738,7 @@ export default function (pi: ExtensionAPI) {
           "OpenSpec",
           "Run the OpenSpec CLI in the working directory. Examples: \"list\", \"show <change-id>\", \"validate <change-id>\", \"archive <change-id>\", \"init\". Use it to create and track change proposals (openspec/changes/<id>/ with proposal.md, tasks.md, specs/).",
           () => packageBinArgv(root, "@fission-ai/openspec", "openspec"),
+          openspecArgs,
         );
 
   // Supervisor routing tool: route a channel message to the members who should

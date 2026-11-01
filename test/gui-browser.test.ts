@@ -372,7 +372,8 @@ describe("setting up models", () => {
     await ready(page, name);
     await page.click(`[data-chat="${name}"]`);
     await page.selectOption("#modelPick", DEAD_MODEL);
-    await until("the choice to be kept", () => JSON.parse(fs.readFileSync(path.join(hubDir, "fleet.json"), "utf8")).agents.find((a: { name: string }) => a.name === name).model === DEAD_MODEL);
+    const config = path.join(hubDir, "fleet.json"); // the crew may still be starting, and the file with it
+    await until("the choice to be kept", () => fs.existsSync(config) && JSON.parse(fs.readFileSync(config, "utf8")).agents.find((a: { name: string }) => a.name === name).model === DEAD_MODEL);
   }, 60000);
 });
 

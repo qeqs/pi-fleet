@@ -2,7 +2,7 @@
  * What happened for each thing a person asked: who woke whom, why, and what it cost.
  * All of it comes from the bus, plus how much had been spent when each request came in.
  */
-import type { FleetMessage } from "./hub.ts";
+import { addressedAgents, type FleetMessage } from "./hub.ts";
 
 export interface TimelineStep {
   ts: number;
@@ -22,11 +22,9 @@ export interface TimelineTask {
   cost?: number;
 }
 
-const MENTION = /@([A-Za-z0-9_-]+)/g;
-
 function why(m: FleetMessage): TimelineStep["why"] {
   if (m.from === "router") return "routed";
-  if (m.text.match(MENTION)) return "mention";
+  if (addressedAgents(m).length > 0) return "mention";
   return m.to === "group" ? "channel" : "direct";
 }
 
@@ -39,7 +37,7 @@ export function buildTimeline(messages: FleetMessage[], spend: Record<string, nu
   const tasks: TimelineTask[] = [];
   const working = new Map<string, TimelineTask>();
   const wake = (m: FleetMessage, task: TimelineTask): void => {
-    for (const name of [m.to, ...[...m.text.matchAll(MENTION)].map((match) => match[1])]) working.set(name, task);
+    for (const name of [m.to, ...addressedAgents(m)]) working.set(name, task);
   };
   for (const m of messages) {
     if (m.kind !== "chat") continue;

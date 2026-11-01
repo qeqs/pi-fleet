@@ -70,6 +70,12 @@ describe("wakeDecision — channels", () => {
     expect(wakeDecision(m, "impl", new Map(), channels)).toEqual({ wake: true, mode: "normal" });
     expect(wakeDecision(m, "rev", new Map(), channels)).toEqual({ wake: true, mode: "normal" });
   });
+  it("a name in the middle of an agent's message is not an address", () => {
+    const m: FleetMessage = { id: "1", ts: 0, from: "impl", to: "dev", kind: "chat", text: "waiting on @rev for this" };
+    expect(wakeDecision(m, "rev", new Map(), channels).wake).toBe(false);
+    expect(wakeDecision(m, "sup", new Map(), channels).mode).toBe("route");
+  });
+
   it("an @mention of the supervisor is work for it, not a routing task", () => {
     const m: FleetMessage = { id: "1", ts: 0, from: "user", to: "dev", kind: "chat", text: "@sup what is the status?" };
     expect(wakeDecision(m, "sup", new Map(), channels)).toEqual({ wake: true, mode: "normal" });

@@ -134,6 +134,35 @@ describe("fleet end to end", () => {
     expect(log.filter((r) => r.agent === "router")).toHaveLength(1); // APPROVE needed no model
   }, 60000);
 
+  it("gives a busy agent what arrived during its run in one wake", async () => {
+    const { hub } = startFleet("merged", ["serve", "--agent", "alice", "--agent", "bob"]);
+    await idle(hub, ["alice", "bob"]);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[slow 3]] a long job" });
+    await until("alice busy", () => hub.readAgents().alice.status === "busy");
+    const before = (await llmLog()).length;
+    hub.appendMessage({ from: "bob", to: "alice", kind: "chat", text: "one meanwhile" });
+    await sleep(600);
+    hub.appendMessage({ from: "bob", to: "alice", kind: "chat", text: "two meanwhile" });
+    await until("the wake", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("two meanwhile")));
+    await sleep(300);
+    await idle(hub, ["alice"]);
+    const wakes = (await llmLog()).slice(before).filter((r) => r.agent === "alice");
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].last).toContain("one meanwhile");
+    expect(wakes[0].last).toContain("two meanwhile");
+  }, 60000);
+
+  it("leaves a repository tidy when an agent sets up the task board", async () => {
+    const folder = path.join(tmp, "board-init");
+    fs.mkdirSync(folder, { recursive: true });
+    const { hub } = startFleet("board-init", ["up", "--agent", `alice:${folder}`]);
+    await idle(hub, ["alice"]);
+    await exchange(hub, "alice", "[[openspec init]]");
+    await until("the board", () => fs.existsSync(path.join(folder, "openspec")));
+    expect(fs.existsSync(path.join(folder, ".pi", "skills"))).toBe(false);
+    expect(fs.existsSync(path.join(folder, ".pi", "prompts"))).toBe(false);
+  }, 60000);
+
   it("queues messages for a busy agent instead of losing them", async () => {
     const { hub } = startFleet("busy", ["serve", "--agent", "alice", "--agent", "bob"]);
     await idle(hub, ["alice", "bob"]);

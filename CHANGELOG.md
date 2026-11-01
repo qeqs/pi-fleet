@@ -6,6 +6,13 @@
   default and routing models.
 - A model is tested before a crew starts, and `fleet doctor` really asks it for a word.
 - A model chosen for an agent survives a restart.
+- Agents wake each other less. A name in passing, such as "thanks @rev", wakes nobody: only the
+  names an agent's message opens with do, and the router reads the rest. A person's @name still
+  wakes whoever they name.
+- Messages for an agent in the middle of a run wait and arrive as one wake.
+- Agents are told not to acknowledge, the reviewer's verdict ends the job, and small jobs skip
+  OpenSpec. On a real model the same task took 5 messages and 240k tokens, down from 14 and 571k.
+- `openspec init` no longer adds skills and prompts for other AI tools to your repository.
 - Fixed: a model error showed as empty messages in the agent's chat. It now shows the error, once.
 - Fixed: the router said it "gave no usable answer" without saying why, and waited out pi's retries.
 - Fixed: every request to pi kept a finished command alive for its full timeout, and every pi process

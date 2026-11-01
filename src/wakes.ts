@@ -2,8 +2,8 @@
  * Who a batch of new bus messages wakes, and with what text. The supervisor pushes
  * the result over RPC; keeping the decision here makes it testable without agents.
  */
-import type { FleetMessage, Hub } from "./hub.ts";
-import { admitMessage, formatInbox, mentionedAgents, routingPrompt, wakeDecision } from "./extension/index.ts";
+import { addressedAgents, type FleetMessage, type Hub } from "./hub.ts";
+import { admitMessage, formatInbox, routingPrompt, wakeDecision } from "./extension/index.ts";
 
 /**
  * Applies the fleet's brake and the channel rules, and returns each woken agent's
@@ -19,7 +19,7 @@ export function computeWakes(messages: FleetMessage[], hub: Hub, lookup: Map<str
     if (!admitMessage(m, hub, maxHops) || m.kind !== "chat") continue;
     const channel = channels.find((c) => c.name === m.to);
     if (channel) {
-      if (mentionedAgents(m.text).some((a) => channel.members.includes(a))) {
+      if (addressedAgents(m).some((a) => channel.members.includes(a))) {
         hub.noteInSummary(channel.name, `${m.from}: ${m.text}`); // goes straight to them, past the router
       } else if (onRouting && !channel.supervisor) {
         onRouting(m);

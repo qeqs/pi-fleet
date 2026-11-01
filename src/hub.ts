@@ -818,6 +818,22 @@ export function addressLabel(to: string, channels: ChannelConfig[] = []): string
   return to === DEFAULT_CHANNEL || channels.some((c) => c.name === to) ? `#${to}` : `@${to}`;
 }
 
+/** Agent names @mentioned in a message (e.g. "@bob" -> ["bob"]). */
+export function mentionedAgents(text: string): string[] {
+  return [...text.matchAll(/@([A-Za-z0-9_-]+)/g)].map((m) => m[1]);
+}
+
+/**
+ * Who a message is for. A person means every name they write. Agents also name each
+ * other in passing ("thanks @rev", "once @impl reports back"), and waking someone costs
+ * a whole turn, so only the names an agent's message opens with count. The router reads
+ * the rest, and can still pass it on.
+ */
+export function addressedAgents(m: Pick<FleetMessage, "from" | "text">): string[] {
+  if (m.from === "user") return mentionedAgents(m.text);
+  return mentionedAgents(/^(?:\s*@[A-Za-z0-9_-]+[\s,:]*)+/.exec(m.text)?.[0] ?? "");
+}
+
 /** Text from a model, safe to print: no escape sequences to retitle or rewrite a terminal. */
 export function printable(text: string): string {
   return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");

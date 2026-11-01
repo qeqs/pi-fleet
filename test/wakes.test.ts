@@ -73,6 +73,14 @@ describe("computeWakes", () => {
       expect(route([say("user", "group", "build it")])).toEqual({ routed: ["build it"], woken: [] });
     });
 
+    it("hands a name an agent mentions in passing to the router, and wakes nobody", () => {
+      expect(route([say("plan", "group", "Thanks @rev, I have your verdict")])).toEqual({ routed: [expect.anything()], woken: [] });
+    });
+
+    it("still goes straight to a member a person names anywhere", () => {
+      expect(route([say("user", "group", "could you ask @rev to look")])).toEqual({ routed: [], woken: ["rev"] });
+    });
+
     it("sends an @mention straight to the member, past the router", () => {
       expect(route([say("impl", "group", "@rev please look")])).toEqual({ routed: [], woken: ["rev"] });
     });

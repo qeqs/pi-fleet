@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hub } from "../src/hub.ts";
 import { MAX_MESSAGE_LEN } from "../src/hub.ts";
-import fleetExtension, { groupWakesAgent, buildLookup, createPoller, fleetPrompt, rolePrompt, worktreePrompt, admitMessage, TASKBOARD } from "../src/extension/index.ts";
+import fleetExtension, { groupWakesAgent, buildLookup, createPoller, fleetPrompt, rolePrompt, worktreePrompt, admitMessage, mentionText, openspecArgs, TASKBOARD } from "../src/extension/index.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
@@ -420,6 +420,44 @@ describe("role presets", () => {
   it("adds nothing when no role is set", () => {
     expect(fleetPrompt("alice", false, "roster")).not.toContain("Your role:");
     expect(rolePrompt(undefined)).toBe("");
+  });
+});
+
+describe("mentionText", () => {
+  it("opens with the names", () => {
+    expect(mentionText(["rev", "plan"], "please look")).toBe("@rev @plan please look");
+  });
+
+  it("does not repeat names the model also wrote", () => {
+    expect(mentionText(["rev"], "@rev please look")).toBe("@rev please look");
+  });
+
+  it("keeps a name that is not a target, and any later in the text", () => {
+    expect(mentionText(["rev"], "@qa and I are done, thanks @rev")).toBe("@rev @qa and I are done, thanks @rev");
+  });
+});
+
+describe("openspecArgs", () => {
+  it("keeps init from writing files for other AI tools", () => {
+    expect(openspecArgs(["init"])).toEqual(["init", "--tools", "none"]);
+  });
+
+  it("leaves a choice alone, and every other command", () => {
+    expect(openspecArgs(["init", "--tools", "pi"])).toEqual(["init", "--tools", "pi"]);
+    expect(openspecArgs(["list"])).toEqual(["list"]);
+  });
+});
+
+describe("what agents are told about messages", () => {
+  it.each([[false], [true]])("says how to hand off and not to acknowledge (lean: %s)", (lean) => {
+    const prompt = fleetPrompt("alice", lean, "alice", "implementer");
+    expect(prompt).toContain("A name later in a message wakes nobody");
+    expect(prompt).toMatch(/[Nn]ever just acknowledge|Do not acknowledge/);
+  });
+
+  it("makes the reviewer's verdict the end of the job", () => {
+    expect(rolePrompt("reviewer")).toContain("APPROVE means nothing is left to check");
+    expect(rolePrompt("planner")).toContain("leave the reviewer out");
   });
 });
 

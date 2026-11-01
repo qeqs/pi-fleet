@@ -15,6 +15,11 @@ describe("buildTimeline", () => {
     expect(task.steps.map((s) => s.why)).toEqual(["routed", "mention", "channel", "direct"]);
   });
 
+  it("does not count a name mentioned in passing as a mention", () => {
+    const [task] = buildTimeline([msg("user", "impl", "go"), msg("impl", "group", "waiting on @rev for this")], {}, 0);
+    expect(task.steps.map((s) => s.why)).toEqual(["channel"]);
+  });
+
   it("starts a new task at each human message", () => {
     const tasks = buildTimeline([msg("user", "group", "one"), msg("impl", "group", "ok"), msg("user", "impl", "two")], {}, 0);
     expect(tasks.map((t) => t.text)).toEqual(["one", "two"]);

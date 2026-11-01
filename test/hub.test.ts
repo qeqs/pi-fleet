@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { Hub, messageTooLong, addressLabel, formatMessage, MAX_MESSAGE_LEN, printable, shortId } from "../src/hub.ts";
+import { Hub, addressedAgents, messageTooLong, addressLabel, formatMessage, MAX_MESSAGE_LEN, printable, shortId } from "../src/hub.ts";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -337,6 +337,26 @@ describe("router failover", () => {
     hub.upsertChannel({ name: "group", members: ["a"], supervisor: "a" });
     expect(hub.reassignSupervisors([])).toEqual([]);
     expect(hub.getChannel("group")?.supervisor).toBe("a");
+  });
+});
+
+describe("addressedAgents", () => {
+  const from = (who: string, text: string) => addressedAgents({ from: who, text });
+
+  it("takes the names an agent's message opens with", () => {
+    expect(from("impl", "@rev please look")).toEqual(["rev"]);
+    expect(from("impl", "@rev @plan, @qa: please look")).toEqual(["rev", "plan", "qa"]);
+    expect(from("impl", "  @rev please look")).toEqual(["rev"]);
+  });
+
+  it("does not take a name an agent mentions in passing", () => {
+    expect(from("plan", "Thanks @rev, approval received.")).toEqual([]);
+    expect(from("rev", "I will review once @impl reports back.")).toEqual([]);
+    expect(from("impl", "@rev done, and @plan can relax")).toEqual(["rev"]);
+  });
+
+  it("takes every name a person writes", () => {
+    expect(from("user", "thanks, and please ask @rev to look")).toEqual(["rev"]);
   });
 });
 

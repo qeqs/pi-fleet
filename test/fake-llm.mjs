@@ -11,6 +11,7 @@
 //   [[write file text]]    -> writes a file, then asks the reviewer to look
 //   a merge conflict       -> merges the base into its branch, keeping its own side
 //   [[run command]]        -> runs a command, then says ok
+//   [[openspec args]]      -> runs the task board tool, then says ok
 //   [[md]]                 -> answers with markdown, some of it hostile
 //   [[tool-then-slow]]     -> calls a tool, then streams slowly
 //   [[hang]]               -> never answers
@@ -93,6 +94,8 @@ function decide(agent, messages) {
     const respond = explicit ? explicit.split(",") : from === "user" ? ["planner"] : [];
     return tool("route", { channel: routing[1], respond, summary: `latest from ${from}` });
   }
+  const board = /\[\[openspec ([^\]]+)\]\]/.exec(user);
+  if (board) return tool("openspec", { args: board[1] });
   const run = /\[\[run ([^\]]+)\]\]/.exec(user);
   if (run) return tool("bash", { command: run[1] });
   const write = /\[\[write (\S+) ([^\]]+)\]\]/.exec(user);

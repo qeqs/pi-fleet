@@ -46,7 +46,7 @@ fleet> # refactor the parser and add tests
   double-wake); when the supervisor exits/detaches the heartbeat goes stale and the poller
   resumes self-waking, so detached mode still works.
 - **Channels & routing** (see `wakeDecision`, `src/router.ts`): a **channel** is a named group
-  chat with a member list (stored in `channels.json`). A message that @mentions members goes
+  chat with a member list (stored in `channels.json`). A message addressed to members goes
   straight to them. Any other message goes to the **router**, which is not an agent: rules settle
   what needs no judgement (`APPROVE` ends the turn, `REQUEST CHANGES` goes to the implementers),
   and the rest get one short model call from a bare pi process that starts from nothing each
@@ -64,9 +64,13 @@ fleet> # refactor the parser and add tests
   or by posting `#name message` to the bus.
 - **Waking semantics** (see `wakeDecision`):
   - a **DM** (`to=<agent>`) wakes that agent;
-  - a channel message **@mentioning** members wakes only those members — mentions always
-    win, so `fleet_mention` can hand work to a specific agent, even from the supervisor;
-  - any other channel message goes to the router, or to the channel's supervisor agent;
+  - a channel message **addressed** to members wakes only those members, even from the
+    supervisor. A person addresses everyone they @name. An agent addresses the names its message
+    opens with, which is what `fleet_mention` writes: a name later on ("thanks @rev") is a
+    reference, and waking someone costs a whole turn;
+  - any other channel message goes to the router, or to the channel's supervisor agent, so
+    "ready for review, @rev" still reaches the reviewer;
+  - messages for an agent in the middle of a run wait until it settles, and arrive as one wake;
   - without a channel config, `group` falls back to the legacy rules: a **reply**
     (`replyTo`, no mention) wakes only the thread's participants, and a message with **no
     mention and no reply** is a broadcast (wakes everyone).
@@ -326,12 +330,16 @@ separator. `/new name [cwd] [model] [role]` accepts the same parts live from the
 
 The optional `role` segment injects a role-specific prompt preset:
 
-- **`planner`** — breaks goals into openspec tasks, assigns work by @mentioning an
-  implementer, tracks progress. Does not implement code itself.
+- **`planner`** — breaks goals into tasks, using openspec for work of several steps, and
+  gives them to an implementer in one message. Does not implement code itself.
 - **`implementer`** — implements assigned tasks, follows the quality gate (validate
-  before marking done), @mentions the reviewer when a task is complete.
-- **`reviewer`** — inspects a change, runs `openspec validate`, smoke-tests, and
-  replies `APPROVE` or `REQUEST CHANGES: <reasons>`.
+  before marking done), and @mentions the reviewer once when everything is done.
+- **`reviewer`** — acts only when asked. Inspects a change, runs `openspec validate`,
+  smoke-tests, and sends one verdict, `APPROVE` or `REQUEST CHANGES: <reasons>`. `APPROVE`
+  ends the job.
+
+Every agent is told to send a message only to hand off work, ask something that blocks it, or
+report a finished result, and never just to acknowledge.
 
 ## Local / weak models
 

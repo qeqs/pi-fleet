@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { Hub } from "../src/hub.ts";
-import { FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
+import { DEAD_MODEL, FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
 
 vi.setConfig({ testTimeout: 90000 });
 
@@ -288,6 +288,92 @@ describe("reviewing an agent's work", () => {
     await page.click('#tabs button[data-tab="tasks"]');
     await page.locator("#mbody").getByText("No tasks on the board yet.").waitFor();
   });
+});
+
+describe("a model that cannot be reached", () => {
+  it("shows the error in the agent's chat, once, not as empty messages", async () => {
+    const { page } = await open("dead-chat", ["--agent", `alice::${DEAD_MODEL}`]);
+    await ready(page, "alice");
+    await page.click('[data-chat="alice"]');
+    await send(page, "are you there");
+    await page.locator(".turn-error").getByText("Model error: Connection error.").waitFor({ timeout: 40000 });
+    await page.locator(".turn-error").getByText("attempts").waitFor({ timeout: 40000 });
+    expect(await page.locator(".turn-error").count()).toBe(1);
+    await page.click(".turn-error button");
+    await page.waitForSelector("#modelRows");
+  }, 60000);
+
+  it("is caught before a crew starts, and can be started anyway", async () => {
+    const { page, hubDir } = await open("dead-first-run", []);
+    await page.waitForSelector(".firstrun");
+    await page.fill("#firstModel", DEAD_MODEL);
+    await page.click('button[data-template="pair"]');
+    await page.locator("#firstError", { hasText: "did not answer: Connection error" }).waitFor({ timeout: 30000 });
+    expect(fs.existsSync(path.join(hubDir, "fleet.json"))).toBe(false);
+    await page.click('#firstError button[data-untested]');
+    await until("the crew", () => fs.existsSync(path.join(hubDir, "fleet.json")));
+    expect(JSON.parse(fs.readFileSync(path.join(hubDir, "fleet.json"), "utf8")).defaultModel).toBe(DEAD_MODEL);
+  }, 60000);
+});
+
+describe("setting up models", () => {
+  const agentDir = () => model.env.PI_CODING_AGENT_DIR!;
+  const openModels = async (page: Page) => {
+    await page.click("#settingsBtn");
+    await page.click('#tabs button[data-tab="models"]');
+    await page.waitForSelector("#modelRows");
+  };
+
+  it("adds a server, tests it and makes it the default, with no file to edit", async () => {
+    const { page, hubDir } = await open("add-server", agentsFor("alice"));
+    await ready(page, "alice");
+    await openModels(page);
+    await page.fill("#provName", "added");
+    await page.fill("#provUrl", `http://127.0.0.1:${model.port}/v1`);
+    await page.fill("#provModels", "fake-1");
+    await page.click("#provAdd");
+    const row = page.locator('.mrow[data-model="added/fake-1"]');
+    await row.waitFor({ timeout: 20000 });
+    await row.locator('button[data-do="test"]').click();
+    await row.locator(".mres.good").getByText("Answers").waitFor({ timeout: 30000 });
+    await row.locator('button[data-do="default"]').click();
+    await page.locator('.mrow[data-model="added/fake-1"] .tag').getByText("default").waitFor({ timeout: 20000 });
+    expect(JSON.parse(fs.readFileSync(path.join(hubDir, "fleet.json"), "utf8")).defaultModel).toBe("added/fake-1");
+  }, 60000);
+
+  it("says which model does not answer, and why", async () => {
+    const { page } = await open("test-dead", agentsFor("alice"));
+    await ready(page, "alice");
+    await openModels(page);
+    const row = page.locator(`.mrow[data-model="${DEAD_MODEL}"]`);
+    await row.locator('button[data-do="test"]').click();
+    await row.locator(".mres.bad").getByText("Connection error").waitFor({ timeout: 30000 });
+  }, 60000);
+
+  it("saves a key without ever showing it again", async () => {
+    const { page } = await open("add-key", agentsFor("alice"));
+    await ready(page, "alice");
+    await openModels(page);
+    await page.fill("#keyProvider", "anthropic");
+    await page.fill("#keyValue", "sk-test-key");
+    await page.click("#keyAdd");
+    await page.waitForFunction(() => (document.getElementById("keyValue") as HTMLInputElement | null)?.value === ""); // the tab reloaded
+    expect(JSON.parse(fs.readFileSync(path.join(agentDir(), "auth.json"), "utf8")).anthropic).toEqual({ type: "api_key", key: "sk-test-key" });
+    expect(await page.content()).not.toContain("sk-test-key");
+    fs.rmSync(path.join(agentDir(), "auth.json")); // other tests share this home
+  }, 60000);
+
+  it("keeps a model chosen for an agent after a restart", async () => {
+    const { page, hubDir } = await open("pick-model", []);
+    await page.waitForSelector(".firstrun");
+    await page.fill("#firstModel", MODEL);
+    await page.click('button[data-template="pair"]');
+    const name = "implementer";
+    await ready(page, name);
+    await page.click(`[data-chat="${name}"]`);
+    await page.selectOption("#modelPick", DEAD_MODEL);
+    await until("the choice to be kept", () => JSON.parse(fs.readFileSync(path.join(hubDir, "fleet.json"), "utf8")).agents.find((a: { name: string }) => a.name === name).model === DEAD_MODEL);
+  }, 60000);
 });
 
 describe("running the fleet", () => {

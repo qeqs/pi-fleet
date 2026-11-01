@@ -8,6 +8,7 @@ export const ROOT = path.resolve(import.meta.dirname, "..");
 export const TSX = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 export const FLEET = path.join(ROOT, "src", "fleet.ts");
 export const MODEL = "fake/fake-1";
+export const DEAD_MODEL = "dead/dead-1";
 
 export interface LlmRequest {
   agent: string;
@@ -81,6 +82,8 @@ export async function startFakeModel(prefix: string): Promise<{ proc: ChildProce
           api: "openai-completions",
           models: [{ id: "fake-1", name: "Fake", reasoning: false, input: ["text"], contextWindow: 131072, maxTokens: 2048, cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 } }],
         },
+        // nothing listens here: a model whose server is down
+        dead: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "dead", api: "openai-completions", models: [{ id: "dead-1", contextWindow: 131072, maxTokens: 2048 }] },
       },
     }),
   );

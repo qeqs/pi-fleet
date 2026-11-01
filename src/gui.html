@@ -93,6 +93,10 @@
   .hit{padding:7px 10px;border:1px solid var(--border);border-radius:7px;margin-bottom:6px;cursor:pointer;font-size:12px;word-break:break-word}
   .hit:hover{background:var(--panel2)}
   .hit .hmeta{color:var(--muted);display:block;margin-bottom:2px}
+  .turn-error{border-left:3px solid var(--red);padding:4px 10px;margin:4px 0;color:var(--text)}
+  .turn-error div{color:var(--muted);font-size:12px;margin-top:4px}
+  .mres{font-size:12px;color:var(--muted);margin-left:8px}.mres.good{color:var(--green)}.mres.bad{color:var(--red)}
+  .tag{font-size:11px;color:var(--accent);margin-left:6px}
   .diff{background:#0a0e14;border:1px solid var(--border);border-radius:6px;padding:8px;font-size:12px;overflow:auto;max-height:50vh;margin:8px 0;white-space:pre}
   .diff .add{color:var(--green)}.diff .del{color:var(--red)}.diff .hunk{color:var(--accent)}
   .step{padding:2px 0 2px 12px;color:var(--muted);font-size:12px;word-break:break-word}
@@ -198,6 +202,7 @@
       <button data-tab="mcp">MCP</button>
       <button data-tab="usage">Usage</button>
       <button data-tab="search">Search</button>
+      <button data-tab="models">Models</button>
       <button data-tab="tasks">Tasks</button>
       <button data-tab="timeline">Timeline</button>
     </div>
@@ -252,7 +257,9 @@
     unread: {},            // new messages per chat since it was last open
     mcp: { mcpServers: {} },
     extensions: { available: [], selected: {} },
-    settingsTab: "fleet"
+    settingsTab: "fleet",
+    firstModel: "",        // the model typed on the first-run screen
+    firstError: ""         // why the crew did not start, as safe HTML
   };
 
   // channel selection helpers: "group" is the default channel, "#name" a named one
@@ -283,7 +290,7 @@
       else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
       else if (b.type === "toolCall") blocks.push({ type: "tool", id: b.id, name: b.name, args: b.arguments, result: undefined, duration: undefined, isError: false, running: false });
     }
-    return { type: "assistant", blocks: blocks, ts: m.timestamp, usage: m.usage };
+    return { type: "assistant", blocks: blocks, ts: m.timestamp, usage: m.usage, error: m.stopReason === "error" ? (m.errorMessage || "the model failed") : null };
   }
 
   // the same message, whether it came from the history or from live events
@@ -511,8 +518,8 @@
       "<div class=\"tbody\">" + args + res + "</div></div>";
   }
 
-  function renderAssistantItem(item) {
-    var html = '<div class="msg"><div class="who">assistant<span class="t">' + time(item.ts) + "</span></div><div class=\"bubble\">";
+  function renderAssistantItem(item, attempts) {
+    var html = "";
     (item.blocks || []).forEach(function (b, i) {
       if (b.type === "text" && b.text) html += "<div>" + md(b.text) + "</div>";
       else if (b.type === "thinking" && b.text) {
@@ -522,8 +529,10 @@
       }
       else if (b.type === "tool") html += renderToolBlock(b);
     });
-    html += "</div></div>";
-    return html;
+    if (item.error) html += '<div class="turn-error"><b>Model error: ' + esc(item.error) + "</b>" + (attempts > 1 ? " (" + attempts + " attempts)" : "") +
+      '<div>Is its server running, and its key valid? <button class="plain" data-open-models="1">Check in Settings → Models</button></div></div>';
+    if (!html) return ""; // a stopped turn that never said anything
+    return '<div class="msg"><div class="who">assistant<span class="t">' + time(item.ts) + '</span></div><div class="bubble">' + html + "</div></div>";
   }
 
   function renderLive(live) {
@@ -545,13 +554,13 @@
     return null;
   }
 
-  function renderConvItem(item) {
+  function renderConvItem(item, attempts) {
     if (item.type === "user") {
       var label = fleetPromptLabel(item.text);
       if (label) return '<details class="wake"><summary>' + esc(label) + "</summary><pre>" + esc(item.text) + "</pre></details>";
       return '<div class="msg user"><div class="bubble">' + esc(item.text) + "</div></div>";
     }
-    if (item.type === "assistant") return renderAssistantItem(item);
+    if (item.type === "assistant") return renderAssistantItem(item, attempts);
     if (item.type === "toolresult") return '<div class="msg"><div class="who">tool result<span class="t">' + esc(item.name || "") + "</span></div><div class=\"bubble\"><pre style=\"margin:0\">" + esc(item.text) + "</pre></div></div>";
     return "";
   }
@@ -567,11 +576,12 @@
 
   function renderFirstRun() {
     var html = '<div class="firstrun"><h2>Start your fleet</h2><p>Pick a crew. They start in this project\'s folder, and you can change them later in Settings.</p>';
-    html += '<label for="firstModel">Model</label><input id="firstModel" list="modelList" placeholder="provider/model" value="' + esc(state.defaultModel) + '">';
+    html += '<label for="firstModel">Model</label><input id="firstModel" list="modelList" placeholder="provider/model" value="' + esc(state.firstModel || state.defaultModel || state.models[0] || "") + '">';
+    html += '<div class="stat" style="margin:4px 0 12px">Not listed? <button class="plain" data-open-models="1">Add one in Settings → Models</button></div>';
     state.templates.forEach(function (t) {
       html += '<div class="template"><b>' + esc(t.name) + '</b><span class="tdesc">' + esc(t.description) + '</span><button data-template="' + esc(t.name) + '">Start</button></div>';
     });
-    return html + '<div class="err" id="firstError"></div></div>';
+    return html + '<div class="err" id="firstError">' + state.firstError + "</div></div>";
   }
 
   function renderConversation() {
@@ -588,7 +598,13 @@
       var conv = state.conv[state.selected];
       if (!conv || (!conv.items.length && !conv.live)) html = '<div class="empty">No messages yet — start the conversation.</div>';
       else {
-        conv.items.forEach(function (it) { html += renderConvItem(it); });
+        var attempts = 1; // pi retries a failed turn, and each try is an item: show them as one
+        conv.items.forEach(function (it, i) {
+          var next = conv.items[i + 1];
+          if (it.error && next && next.error === it.error) { attempts++; return; }
+          html += renderConvItem(it, attempts);
+          attempts = 1;
+        });
         html += renderLive(conv.live);
       }
     }
@@ -604,13 +620,34 @@
       renderConversation();
       return;
     }
+    if (e.target.hasAttribute("data-open-models")) return openSettings("models");
     var start = e.target.closest("button[data-template]");
-    if (!start) return;
-    start.disabled = true;
-    post("/start-template", { template: start.getAttribute("data-template"), model: document.getElementById("firstModel").value.trim() }).then(function (r) {
-      start.disabled = false;
-      var err = document.getElementById("firstError");
-      if (!r.ok && err) err.textContent = r.error || "Could not start the fleet";
+    if (start) startCrew(start.getAttribute("data-template"), start.hasAttribute("data-untested"));
+  }
+
+  function showFirstError(html) {
+    state.firstError = html;
+    var err = document.getElementById("firstError");
+    if (err) err.innerHTML = html;
+  }
+
+  /** A crew on a model nobody can reach only ends in errors, so try it first. */
+  function startCrew(template, untested) {
+    var model = document.getElementById("firstModel").value.trim();
+    state.firstModel = model;
+    var launch = function () {
+      showFirstError("Starting…");
+      post("/start-template", { template: template, model: model }).then(function (r) {
+        showFirstError(r.ok ? "" : esc(r.error || "Could not start the fleet"));
+      });
+    };
+    if (untested) return launch();
+    showFirstError("Checking the model…");
+    post("/models/test", { model: model }).then(function (r) {
+      var test = r.result || { ok: false, error: r.error };
+      if (test.ok) return launch();
+      showFirstError(esc(model || "The default model") + " did not answer: " + esc(test.error) +
+        '<div style="margin-top:8px"><button class="plain" data-template="' + esc(template) + '" data-untested="1">Start anyway</button></div>');
     });
   }
 
@@ -644,6 +681,8 @@
     var tab = state.settingsTab;
     if (tab === "fleet") {
       renderFleetTab();
+    } else if (tab === "models") {
+      renderModelsTab();
     } else if (tab === "changes") {
       renderChanges();
     } else if (tab === "tasks") {
@@ -801,6 +840,93 @@
           else status.textContent = m.result.merged ? "Merged." : "Nothing to merge.";
         });
       };
+    });
+  }
+
+  var KEY_PROVIDERS = ["anthropic", "openai", "google", "openrouter", "deepseek", "groq", "mistral", "xai"];
+
+  function openSettings(tab) {
+    state.settingsTab = tab;
+    syncTabs();
+    renderSettings();
+    overlayEl.classList.add("show");
+  }
+
+  function fillModelList() {
+    document.getElementById("modelList").innerHTML = state.models.map(function (m) { return '<option value="' + esc(m) + '">'; }).join("");
+    var first = document.getElementById("firstModel");
+    if (first && !first.value) first.value = state.defaultModel || state.models[0] || "";
+  }
+
+  function modelRow(model, config) {
+    var tags = (model === config.defaultModel ? '<span class="tag">default</span>' : "") + (model === config.routerModel ? '<span class="tag">router</span>' : "");
+    return '<div class="mrow" data-model="' + esc(model) + '"><span class="nm">' + esc(model) + tags + '</span><span class="mres"></span>' +
+      '<span class="stat"><button class="plain" data-do="test">Test</button> <button class="plain" data-do="default">Use by default</button> <button class="plain" data-do="router">Use for routing</button></span></div>';
+  }
+
+  function renderModelsTab() {
+    Promise.all([get("/models"), get("/config")]).then(function (all) {
+      if (state.settingsTab !== "models") return;
+      var models = all[0].result || [];
+      var config = all[1].result || { agents: [] };
+      state.models = models;
+      fillModelList();
+      mbodyEl.innerHTML = "<h3>Models</h3>" +
+        '<div class="stat" style="margin-bottom:10px">Agents reach models through pi, and this is the same list pi uses. Choices here apply to agents started afterwards.</div>' +
+        '<div id="modelRows">' + (models.length ? models.map(function (m) { return modelRow(m, config); }).join("") : '<div class="stat">No models yet. Add one below.</div>') + "</div>" +
+        '<div class="stat" id="modelStatus" style="margin:6px 0"></div>' +
+        "<h3>Add a server</h3><div class=\"stat\">Any server with an OpenAI-style API: Ollama, LM Studio, vLLM, or a hosted one.</div>" +
+        '<div class="row2"><div class="field"><label>Name</label><input id="provName" placeholder="ollama"></div>' +
+        '<div class="field"><label>Address</label><input id="provUrl" placeholder="http://localhost:11434/v1"></div>' +
+        '<div class="field"><label>Models, separated by commas</label><input id="provModels" placeholder="qwen3:8b"></div>' +
+        '<div class="field"><label>API key (empty for a local server)</label><input id="provKey" type="password" autocomplete="off"></div></div>' +
+        '<button class="plain" id="provAdd">Add server</button>' +
+        "<h3>Add a key</h3><div class=\"stat\">For a provider pi already knows. Saved in pi's own files on this machine.</div>" +
+        '<div class="row2"><div class="field"><label>Provider</label><input id="keyProvider" list="keyProviders" placeholder="anthropic">' +
+        '<datalist id="keyProviders">' + KEY_PROVIDERS.map(function (p) { return '<option value="' + p + '">'; }).join("") + "</datalist></div>" +
+        '<div class="field"><label>API key</label><input id="keyValue" type="password" autocomplete="off"></div></div>' +
+        '<button class="plain" id="keyAdd">Save key</button>';
+      document.getElementById("modelRows").addEventListener("click", function (e) { modelAction(e, config); });
+      document.getElementById("provAdd").onclick = addProvider;
+      document.getElementById("keyAdd").onclick = addKey;
+    });
+  }
+
+  function modelAction(e, config) {
+    var action = e.target.getAttribute("data-do");
+    if (!action) return;
+    var row = e.target.closest(".mrow");
+    var model = row.getAttribute("data-model");
+    var result = row.querySelector(".mres");
+    if (action === "test") {
+      result.className = "mres";
+      result.textContent = "Asking…";
+      return post("/models/test", { model: model }).then(function (r) {
+        var test = r.result || { ok: false, error: r.error };
+        result.className = "mres " + (test.ok ? "good" : "bad");
+        result.textContent = test.ok ? "Answers, " + (test.ms / 1000).toFixed(1) + " s" : test.error;
+      });
+    }
+    var change = action === "default" ? { defaultModel: model } : { routerModel: model };
+    post("/config", Object.assign({}, config, change)).then(function (r) {
+      if (r.ok) renderModelsTab();
+      else document.getElementById("modelStatus").textContent = "Not saved: " + r.error;
+    });
+  }
+
+  function addProvider() {
+    var value = function (id) { return document.getElementById(id).value.trim(); };
+    post("/models/provider", { name: value("provName"), baseUrl: value("provUrl"), models: value("provModels"), apiKey: value("provKey") }).then(function (r) {
+      if (r.ok) renderModelsTab();
+      else document.getElementById("modelStatus").textContent = "Not added: " + r.error;
+    });
+  }
+
+  function addKey() {
+    var input = document.getElementById("keyValue");
+    post("/models/key", { provider: document.getElementById("keyProvider").value.trim(), key: input.value }).then(function (r) {
+      if (r.ok) renderModelsTab();
+      else document.getElementById("modelStatus").textContent = "Not saved: " + r.error;
     });
   }
 
@@ -1044,7 +1170,7 @@
     get("/models").then(function (r) {
       if (!r.ok) return;
       state.models = r.result || [];
-      document.getElementById("modelList").innerHTML = state.models.map(function (m) { return '<option value="' + esc(m) + '">'; }).join("");
+      fillModelList();
       renderHeader();
     });
   }
@@ -1166,10 +1292,9 @@
   headerEl.addEventListener("change", function (e) {
     if (e.target.id !== "modelPick") return;
     var name = state.selected;
-    var slash = e.target.value.indexOf("/");
-    rpc(name, "set_model", { provider: e.target.value.slice(0, slash), modelId: e.target.value.slice(slash + 1) }).then(function (r) {
-      if (r.ok && (!r.result || r.result.success !== false)) state.agents[name].model = e.target.value;
-      else reportFailure({ error: (r.result && r.result.error) || r.error });
+    post("/agents/model", { name: name, model: e.target.value }).then(function (r) {
+      if (r.ok) state.agents[name].model = e.target.value;
+      else reportFailure(r);
       renderHeader();
     });
   });
@@ -1208,7 +1333,7 @@
     var b = e.target.closest("button[data-act]");
     if (b) headerAction(b.getAttribute("data-act"));
   });
-  document.getElementById("settingsBtn").onclick = function () { state.settingsTab = "fleet"; syncTabs(); renderSettings(); overlayEl.classList.add("show"); };
+  document.getElementById("settingsBtn").onclick = function () { openSettings("fleet"); };
   document.getElementById("closeSettings").onclick = function () { overlayEl.classList.remove("show"); };
   overlayEl.addEventListener("click", function (e) { if (e.target === overlayEl) overlayEl.classList.remove("show"); });
   document.getElementById("tabs").addEventListener("click", function (e) {

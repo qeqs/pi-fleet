@@ -10,8 +10,8 @@ import path from "node:path";
 import { Hub, isPidAlive } from "../src/hub.ts";
 import { bridgeListening } from "../src/rpc.ts";
 import { HUB_FORMAT, readHubFormat } from "../src/hubformat.ts";
-import { execFileSync } from "node:child_process";
-import { crash, FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
+import { execFileSync, spawnSync } from "node:child_process";
+import { DEAD_MODEL, crash, FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
 
 let tmp: string;
 let llm: ChildProcess;
@@ -524,6 +524,39 @@ describe("fleet end to end", () => {
     await until("the agent to stop", () => !isPidAlive(pid));
     expect(hub.readAgents().alice.status).toBe("stopped");
   }, 60000);
+
+  describe("a model that cannot be reached", () => {
+    it("says so in the channel, and where to look", async () => {
+      const { hub } = startFleet("dead-agent", ["up", "--agent", `alice::${DEAD_MODEL}`]);
+      await idle(hub, ["alice"]);
+      hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "are you there" });
+      const notice = await until("the notice", () => hub.tailMessages(20).find((m) => m.text.includes("stopped on a model error")));
+      expect(notice.text).toBe('agent "alice" stopped on a model error: Connection error. Test the model in Settings → Models, or with fleet doctor.');
+    }, 60000);
+
+    it("has the router say why it could not decide, without waiting out pi's retries", async () => {
+      const { hub } = startFleet("dead-router", ["up", "--agent", "alice", "--agent", "bob", "--router-model", DEAD_MODEL]);
+      await idle(hub, ["alice", "bob"]);
+      const started = Date.now();
+      hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "anyone there" });
+      const notice = await until("the notice", () => hub.tailMessages(20).find((m) => m.text.startsWith("the router")));
+      expect(notice.text).toContain("could not reach its model (Connection error)");
+      expect(Date.now() - started).toBeLessThan(10000); // pi alone would retry for about 15 s
+    }, 60000);
+
+    it("fails fleet doctor, which used to pass as long as pi knew the name", () => {
+      const hubDir = path.join(tmp, "doctor-dead");
+      fs.mkdirSync(hubDir, { recursive: true });
+      fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ defaultModel: DEAD_MODEL, agents: [] }));
+      const down = spawnSync(process.execPath, [TSX, FLEET, "doctor", "--dir", hubDir], { env, encoding: "utf8", timeout: 60000 });
+      expect(down.status).toBe(1);
+      expect(down.stdout).toContain(`${DEAD_MODEL} does not answer: Connection error`);
+      fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ defaultModel: MODEL, agents: [] }));
+      const up = spawnSync(process.execPath, [TSX, FLEET, "doctor", "--dir", hubDir], { env, encoding: "utf8", timeout: 60000 });
+      expect(up.status).toBe(0);
+      expect(up.stdout).toContain(`${MODEL} answers`);
+    }, 60000);
+  });
 
   it("gives agents the task board fleet.json names", async () => {
     const hubDir = path.join(tmp, "board-config");

@@ -11,6 +11,7 @@
  */
 import crypto from "node:crypto";
 import http from "node:http";
+import type { ProviderInput } from "./modelconfig.ts";
 import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import path from "node:path";
@@ -76,6 +77,11 @@ export interface FleetControls {
   writeConfig(config: unknown): void;
   search(query: string): FleetMessage[];
   clearChannel(name: string): void;
+  testModel(model: string | undefined): Promise<unknown>;
+  providers(): unknown;
+  saveProvider(input: ProviderInput): void;
+  saveApiKey(provider: string, key: string): void;
+  setAgentModel(name: string, model: string): Promise<void>;
   diff(agent: string): unknown;
   merge(agent: string): unknown;
   tasks(): Promise<unknown>;
@@ -123,6 +129,15 @@ export interface GuiServerOptions {
   upsertChannel?: (channel: ChannelConfig) => void;
   /** Remove a channel (never the default "group"). */
   removeChannel?: (name: string) => void;
+}
+
+export function isLoopback(address: string | undefined): boolean {
+  return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address ?? "");
+}
+
+/** The GUI speaks plain HTTP, so a key typed on another machine would cross the network in the clear. */
+function keysStayLocal(req: http.IncomingMessage): void {
+  if (!isLoopback(req.socket.remoteAddress)) throw new Error("add keys on the machine running the fleet: this connection is not encrypted");
 }
 
 export class GuiServer {
@@ -436,6 +451,21 @@ export class GuiServer {
     if (req.method === "POST" && url === "/agents/remove") return this.control(req, res, (b, c) => c.removeAgent(String(b.name)));
     if (req.method === "POST" && url === "/start-template") return this.control(req, res, (b, c) => c.startTemplate(String(b.template), b.model ? String(b.model) : undefined));
     if (req.method === "GET" && url === "/models") return this.control(req, res, (_b, c) => c.models());
+    if (req.method === "POST" && url === "/models/test") return this.control(req, res, (b, c) => c.testModel(b.model ? String(b.model) : undefined));
+    if (req.method === "GET" && url === "/models/providers") return this.control(req, res, (_b, c) => c.providers());
+    if (req.method === "POST" && url === "/models/provider") {
+      return this.control(req, res, (b, c) => {
+        keysStayLocal(req);
+        c.saveProvider({ name: String(b.name), baseUrl: String(b.baseUrl), apiKey: b.apiKey ? String(b.apiKey) : undefined, models: String(b.models).split(",") });
+      });
+    }
+    if (req.method === "POST" && url === "/models/key") {
+      return this.control(req, res, (b, c) => {
+        keysStayLocal(req);
+        c.saveApiKey(String(b.provider), String(b.key));
+      });
+    }
+    if (req.method === "POST" && url === "/agents/model") return this.control(req, res, (b, c) => c.setAgentModel(String(b.name), String(b.model)));
     if (req.method === "GET" && url === "/config") return this.control(req, res, (_b, c) => c.readConfig());
     if (req.method === "POST" && url === "/config") return this.control(req, res, (b, c) => c.writeConfig(b));
     if (req.method === "GET" && url === "/search") return this.control(req, res, (_b, c) => c.search(parsed.searchParams.get("q") ?? ""));

@@ -18,12 +18,13 @@ import { computeWakes } from "./wakes.ts";
 import { availableModels, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
 import { RestartPolicy } from "./restart.ts";
 import { describeQuestion, parseAnswer, questionFrom, type Answer, type Question } from "./questions.ts";
-import { fallbackRoute, ModelRouter, parseRouterReply, routeByRules, routerPrompt, type RouteDecision } from "./router.ts";
+import { fallbackRoute, ModelRouter, parseRouterReply, routeByRules, routerPrompt, type RouteDecision, testModel } from "./router.ts";
 import { applyRoute } from "./extension/index.ts";
 import { ensureWorktree, mergeWorktree, repoRoot, repoSubfolder, worktreeChanges, type Worktree } from "./worktree.ts";
 import { buildTimeline } from "./timeline.ts";
 import { isTaskBoard, listTasks } from "./taskboard.ts";
 import { HUB_FORMAT, upgradeHub } from "./hubformat.ts";
+import { listProviders, saveApiKey, saveProvider } from "./modelconfig.ts";
 import { killProcessTree, openInBrowser } from "./programs.ts";
 import { UsageError, budgetArg, type FleetArgs, type Limits } from "./cli.ts";
 
@@ -233,7 +234,11 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     const known = Object.values(hub.readAgents());
     const byRule = routeByRules(m, channel, known);
     if (byRule) return { respond: byRule };
-    const reply = await routerFor(channel).ask(routerPrompt(channel, m, known, hub.tailMessages(40))).catch(() => "");
+    const router = routerFor(channel);
+    const reply = await router.ask(routerPrompt(channel, m, known, hub.tailMessages(40))).catch((err: Error) => {
+      router.failure = err.message;
+      return "";
+    });
     const spent = [...routers.values()].reduce((sum, r) => ({ tokens: sum.tokens + r.spent.tokens, cost: sum.cost + r.spent.cost }), { tokens: 0, cost: 0 });
     const stats = { tokens: { total: spent.tokens }, cost: spent.cost };
     hub.saveStats(ROUTER, stats);
@@ -242,7 +247,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     const decision = parseRouterReply(reply, channel);
     if (decision) return decision;
     const respond = fallbackRoute(channel, known, [...agents.keys()]);
-    hub.appendMessage({ from: "system", to: "group", kind: "system", text: `the router gave no usable answer, so a message in #${channel.name} went to ${respond.join(", ") || "nobody"}` });
+    const what = router.failure ? `could not reach its model (${router.failure.replace(/\.$/, "")})` : "gave no usable answer";
+    hub.appendMessage({ from: "system", to: "group", kind: "system", text: `the router ${what}, so a message in #${channel.name} went to ${respond.join(", ") || "nobody"}` });
     return { respond };
   }
 
@@ -541,7 +547,12 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         restartAgent: (name) => restartAgent(name),
         removeAgent: forgetAgent,
         startTemplate,
-        models: () => availableModels([...agents.values()][0]?.rpc),
+        models: () => availableModels(), // a fresh pi: a provider added a moment ago is in the list
+        testModel: (model) => testModel(ROOT, hub.dir, hub.logFileFor("model-test"), model ?? args.model ?? fleetCfg?.defaultModel),
+        providers: listProviders,
+        saveProvider,
+        saveApiKey,
+        setAgentModel,
         readConfig: () => loadFleetConfig(hub.dir) ?? { agents: [] },
         writeConfig: (config) => saveFleetConfig(hub.dir, checkFleetConfig(config, "fleet config")),
         search: (query) => hub.searchMessages(query),
@@ -794,6 +805,18 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     for (const a of crew) await spawnAndTrack(a.name, baseCwd, model ?? args.model, a.role);
     refreshDefaultChannel();
     if (!loadFleetConfig(hub.dir)) saveFleetConfig(hub.dir, { defaultModel: model, agents: crew });
+  }
+
+  /** Change a running agent's model, and keep the change for the next start. */
+  async function setAgentModel(name: string, model: string): Promise<void> {
+    const handle = agents.get(name);
+    if (!handle) throw new Error(`no running agent "${name}"`);
+    const slash = model.indexOf("/");
+    const res = await handle.rpc.sendCommand({ type: "set_model", provider: model.slice(0, slash), modelId: model.slice(slash + 1) });
+    if (res.success === false) throw new Error(String(res.error ?? `pi could not switch to ${model}`));
+    hub.updateAgent(name, { model });
+    const config = loadFleetConfig(hub.dir);
+    if (config?.agents.some((a) => a.name === name)) saveFleetConfig(hub.dir, { ...config, agents: config.agents.map((a) => (a.name === name ? { ...a, model } : a)) });
   }
 
   /** Restart an agent by hand. It keeps its conversation and any work in progress. */

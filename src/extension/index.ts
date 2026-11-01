@@ -478,7 +478,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", () => {
     clearTimeout(stallTimer);
     if (modelError) {
-      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" stopped on a model error: ${modelError}` });
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `agent "${name}" stopped on a model error: ${modelError.replace(/\.$/, "")}. Test the model in Settings → Models, or with fleet doctor.` });
       modelError = undefined;
     }
     setBusy(false);

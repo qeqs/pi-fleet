@@ -5,6 +5,7 @@
  * call that starts from nothing each time.
  */
 import fs from "node:fs";
+import path from "node:path";
 import type { AgentInfo, ChannelConfig, FleetMessage } from "./hub.ts";
 import { PiRpc, piArgv } from "./rpc.ts";
 
@@ -74,12 +75,36 @@ export function fallbackRoute(channel: ChannelConfig, agents: AgentInfo[], runni
   return pick ? [pick.name] : [];
 }
 
+export interface ModelTest {
+  ok: boolean;
+  /** What went wrong, in the words of the model's provider. */
+  error?: string;
+  ms: number;
+}
+
+/** Ask a model for one word: the only way to know a server is up and a key is good. */
+export async function testModel(root: string, cwd: string, logFile: string, model: string | undefined): Promise<ModelTest> {
+  const started = Date.now();
+  const router = new ModelRouter(root, cwd, logFile, model);
+  try {
+    const reply = await router.ask("Reply with the single word: ok");
+    const ms = Date.now() - started;
+    return reply.trim() ? { ok: true, ms } : { ok: false, error: router.failure ?? "the model answered with nothing", ms };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message, ms: Date.now() - started };
+  } finally {
+    router.close();
+  }
+}
+
 /** A bare pi process with no tools or extensions, restarted from nothing for every question. */
 export class ModelRouter {
   private rpc: PiRpc | null = null;
   private waiting: { done: () => void; text: string } | null = null;
   /** Tokens and cost across every question so far. */
   spent = { tokens: 0, cost: 0 };
+  /** Why the last question got no answer, if the model said. */
+  failure: string | null = null;
 
   constructor(
     private root: string,
@@ -92,12 +117,16 @@ export class ModelRouter {
     const args = ["--mode", "rpc", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp", "--thinking", "off", "--system-prompt", SYSTEM_PROMPT];
     if (this.model) args.push("--model", this.model);
     fs.mkdirSync(this.cwd, { recursive: true });
+    fs.mkdirSync(path.dirname(this.logFile), { recursive: true }); // a new hub has no agents yet
     const rpc = new PiRpc(piArgv(this.root, args), { cwd: this.cwd, env: process.env, logFile: this.logFile, timeoutMs: ROUTER_TIMEOUT_MS });
     rpc.onEvent = (rec) => {
-      const message = rec.message as { role?: string; content?: { type: string; text?: string }[] } | undefined;
+      const message = rec.message as { role?: string; content?: { type: string; text?: string }[]; stopReason?: string; errorMessage?: string } | undefined;
       if (rec.type === "message_end" && message?.role === "assistant" && this.waiting) {
         this.waiting.text = (message.content ?? []).map((b) => b.text ?? "").join("");
+        this.failure = message.stopReason === "error" ? (message.errorMessage ?? "the model failed") : null;
       }
+      // someone is waiting on this answer: fall back at once rather than after pi's retries
+      if (rec.type === "auto_retry_start") void rpc.sendCommand({ type: "abort_retry" }).catch(() => {});
       if (rec.type === "agent_settled") this.waiting?.done();
     };
     rpc.onExit = () => {
@@ -111,6 +140,7 @@ export class ModelRouter {
   async ask(prompt: string): Promise<string> {
     this.rpc ??= this.start();
     const rpc = this.rpc;
+    this.failure = null;
     await rpc.sendCommand({ type: "new_session" });
     const wait = { done: () => {}, text: "" };
     const settled = new Promise<void>((resolve) => (wait.done = resolve));

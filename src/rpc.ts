@@ -82,6 +82,7 @@ export class PiRpc {
     this.proc.stdout!.on("data", (chunk: Buffer) => this.onData(chunk));
     this.proc.stderr!.on("data", (chunk: Buffer) => fs.writeSync(logFd, chunk));
     this.proc.stdin!.on("error", () => {}); // ignore EPIPE on shutdown
+    this.proc.on("close", () => fs.closeSync(logFd)); // once its output has drained
     this.proc.on("exit", (code) => {
       this.exited = true;
       for (const p of this.pending.values()) p.reject(new Error(`pi process exited (${code})`));
@@ -136,7 +137,7 @@ export class PiRpc {
           this.pending.delete(id);
           reject(new Error(`RPC timeout: ${cmd.type}`));
         }
-      }, this.timeoutMs);
+      }, this.timeoutMs).unref(); // a pending request is no reason to keep a finished command alive
     });
   }
 
@@ -278,7 +279,7 @@ export class PiRpcBridge {
           this.pending.delete(id);
           reject(new Error(`RPC timeout: ${cmd.type}`));
         }
-      }, this.timeoutMs);
+      }, this.timeoutMs).unref(); // a pending request is no reason to keep a finished command alive
     });
   }
 

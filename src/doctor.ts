@@ -12,6 +12,7 @@ import { HUB_FORMAT, readHubFormat } from "./hubformat.ts";
 import { onPath } from "./programs.ts";
 import { configPath, loadFleetConfig } from "./config.ts";
 import { probeContextWindow } from "./spawn.ts";
+import { testModel } from "./router.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -83,15 +84,22 @@ async function modelChecks(hub: Hub): Promise<Check[]> {
     return []; // already reported by the config check
   }
   const models = [...new Set([cfg?.defaultModel, cfg?.routerModel, ...(cfg?.agents ?? []).map((a) => a.model)].filter((m): m is string => !!m))];
+  if (models.length === 0) return [await defaultModelCheck(hub)];
   const checks = await Promise.all(
     models.map(async (model): Promise<Check> => {
       const contextWindow = await probeContextWindow(model);
-      return contextWindow === undefined
-        ? { status: "fail", label: "model", detail: `pi does not know "${model}" (see ~/.pi/agent/models.json)` }
-        : { status: "ok", label: "model", detail: `${model} (context window ${contextWindow})` };
+      if (contextWindow === undefined) return { status: "fail", label: "model", detail: `pi does not know "${model}" (see ~/.pi/agent/models.json)` };
+      const test = await testModel(ROOT, hub.dir, hub.logFileFor("model-test"), model);
+      return test.ok ? { status: "ok", label: "model", detail: `${model} answers (${test.ms} ms, context window ${contextWindow})` } : { status: "fail", label: "model", detail: `${model} does not answer: ${test.error}` };
     }),
   );
   return checks;
+}
+
+/** With no fleet yet there is nothing to fail: this is what a crew would get if none is named. */
+async function defaultModelCheck(hub: Hub): Promise<Check> {
+  const test = await testModel(ROOT, hub.dir, hub.logFileFor("model-test"), undefined);
+  return test.ok ? { status: "ok", label: "model", detail: `pi's default model answers (${test.ms} ms)` } : { status: "warn", label: "model", detail: `pi's default model does not answer: ${test.error}` };
 }
 
 export function formatCheck(hub: Hub): Check {

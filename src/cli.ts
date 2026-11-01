@@ -81,17 +81,18 @@ export type FleetArgs = ReturnType<typeof parseArgs>;
 export const USAGE = `pi-fleet — multi-agent supervisor for pi
 
 Usage:
-  npm run fleet -- up --agent name[:cwd][:model][:role] [--agent name2[:cwd2][:model2]] [--model M] [--lean] [--detach] [--gui [--open] [--port N]] [--max-turns N] [--max-hops N] [--dir DIR]
-  npm run fleet -- list [--dir DIR]
-  npm run fleet -- stop [name|all] [--dir DIR]
-  npm run fleet -- log [name] [--dir DIR]
-  npm run fleet -- init [--dir DIR]         # create a starter fleet.json
-  npm run fleet -- templates                 # list --template presets (sdlc, pair, solo)
-  npm run fleet -- config [--dir DIR]        # show fleet.json
-  npm run fleet -- rename <agent> <name>     # set an agent's pi session display name
-  npm run fleet -- serve [--agent ... | --template ...] [--port N] [--host H]   # headless web UI
-  npm run fleet -- doctor [--dir DIR]        # check pi, the hub, the config and the models
-  npm run fleet -- help                      # this text
+  fleet up --agent name[:cwd][:model][:role] [--agent name2[:cwd2][:model2]] [--model M] [--lean] [--detach] [--gui [--open] [--port N]] [--max-turns N] [--max-hops N] [--dir DIR]
+  fleet list [--dir DIR]
+  fleet stop [name|all] [--dir DIR]
+  fleet log [name] [--dir DIR]
+  fleet init [--dir DIR]         # create a starter fleet.json
+  fleet templates                 # list --template presets (sdlc, pair, solo)
+  fleet config [--dir DIR]        # show fleet.json
+  fleet rename <agent> <name>     # set an agent's pi session display name
+  fleet serve [--agent ... | --template ...] [--port N] [--host H]   # headless web UI
+  fleet doctor [--dir DIR]        # check pi, the hub, the config and the models
+  fleet help                      # this text
+  fleet version                   # the installed version
 
   With no --agent flags, up reads the fleet from <dir>/fleet.json (see: fleet init).
 

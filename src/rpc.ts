@@ -24,9 +24,18 @@ export type StreamingBehavior = "steer" | "followUp";
  * paths, model ids).
  */
 export function packageBinArgv(root: string, pkgName: string, bin: string): string[] {
-  const pkgDir = path.join(root, "node_modules", ...pkgName.split("/"));
-  const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8")) as { bin: Record<string, string> };
-  return [process.execPath, path.join(pkgDir, pkg.bin[bin])];
+  const pkgDir = packageDir(root, pkgName);
+  const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8")) as { bin: string | Record<string, string> };
+  return [process.execPath, path.join(pkgDir, typeof pkg.bin === "string" ? pkg.bin : pkg.bin[bin])];
+}
+
+/** Find a dependency, which npm may have hoisted above pi-fleet's own folder. */
+function packageDir(root: string, pkgName: string): string {
+  for (let dir = root; ; dir = path.dirname(dir)) {
+    const candidate = path.join(dir, "node_modules", ...pkgName.split("/"));
+    if (fs.existsSync(path.join(candidate, "package.json"))) return candidate;
+    if (dir === path.dirname(dir)) throw new Error(`${pkgName} is not installed: reinstall pi-fleet`);
+  }
 }
 
 export function piArgv(root: string, args: string[]): string[] {

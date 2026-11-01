@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hub, isPidAlive } from "./hub.ts";
 import { bridgeListening, packageBinArgv, piArgv } from "./rpc.ts";
+import { HUB_FORMAT, readHubFormat } from "./hubformat.ts";
 import { configPath, loadFleetConfig } from "./config.ts";
 import { probeContextWindow } from "./spawn.ts";
 
@@ -92,6 +93,13 @@ async function modelChecks(hub: Hub): Promise<Check[]> {
   return checks;
 }
 
+export function formatCheck(hub: Hub): Check {
+  const format = readHubFormat(hub.dir);
+  if (format > HUB_FORMAT) return { status: "fail", label: "hub", detail: `written by a newer pi-fleet (format ${format}): update pi-fleet` };
+  if (format < HUB_FORMAT && fs.existsSync(hub.messagesFile)) return { status: "warn", label: "hub", detail: `format ${format}: the next \`fleet up\` upgrades it to ${HUB_FORMAT}` };
+  return { status: "ok", label: "hub", detail: `format ${HUB_FORMAT}` };
+}
+
 export async function cmdDoctor(dir: string | undefined, baseCwd: string): Promise<void> {
   const hub = new Hub(dir ?? path.join(baseCwd, ".pi-fleet"));
   const checks: Check[] = [
@@ -99,6 +107,7 @@ export async function cmdDoctor(dir: string | undefined, baseCwd: string): Promi
     toolCheck("pi", () => piArgv(ROOT, []), "fail"),
     toolCheck("openspec", () => packageBinArgv(ROOT, "@fission-ai/openspec", "openspec"), "warn"),
     writableCheck(hub),
+    formatCheck(hub),
     configCheck(hub),
     supervisorCheck(hub),
     await registryCheck(hub),

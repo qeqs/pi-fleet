@@ -44,6 +44,18 @@ afterAll(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+describe("the installed command", () => {
+  it("runs from any folder and knows its version", () => {
+    const r = spawnSync(process.execPath, [path.join(ROOT, "bin", "fleet.mjs"), "--version"], { cwd: os.tmpdir(), encoding: "utf8", timeout: 60000 });
+    expect(r.stdout.trim()).toBe(JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version);
+  });
+
+  it("is what the usage text tells people to type", () => {
+    expect(fleet("help").stdout).toContain("  fleet up ");
+    expect(fleet("help").stdout).not.toContain("npm run");
+  });
+});
+
 describe("fleet on bad input", () => {
   it("names an unknown option and points to help", () => {
     const r = fleet("up", "--detatch");

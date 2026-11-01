@@ -1,27 +1,67 @@
 {
   "name": "pi-fleet",
   "version": "0.7.0",
-  "private": true,
   "type": "module",
   "description": "Multi-agent fleet for pi: named concurrent agent sessions, group chat, inter-agent messaging, OpenSpec coordination",
   "license": "Apache-2.0",
   "repository": "github:qeqs/pi-fleet",
+  "bin": {
+    "fleet": "bin/fleet.mjs"
+  },
+  "main": "electron/main.mjs",
+  "files": [
+    "bin",
+    "src",
+    "electron",
+    "GETTING_STARTED.md",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "fleet": "tsx src/fleet.ts",
     "desktop": "electron electron/main.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dist": "electron-builder --publish never"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^1.0.0",
     "@earendil-works/pi-coding-agent": "^1.2.0",
-    "@fission-ai/openspec": "^1.15.0"
+    "@fission-ai/openspec": "^1.15.0",
+    "tsx": "^4.19.0"
   },
   "devDependencies": {
     "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
     "playwright-core": "^1.64.1",
-    "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^5.0.5"
+  },
+  "build": {
+    "appId": "io.github.qeqs.pi-fleet",
+    "productName": "pi-fleet",
+    "artifactName": "pi-fleet-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "asar": false,
+    "files": [
+      "electron/**",
+      "src/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Development"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools"
+    }
   }
 }

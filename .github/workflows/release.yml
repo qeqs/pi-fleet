@@ -1,0 +1,81 @@
+name: Release
+
+# On a version tag: prove a clean machine can install and use each form of the release,
+# then publish it. On a milestone branch: the same proof, with no release at the end.
+on:
+  push:
+    tags: ["v*"]
+    branches: ["milestone-7*"]
+
+jobs:
+  npm-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g "github:${{ github.repository }}#${{ github.sha }}"
+        shell: bash
+      - run: node scripts/check-install.mjs
+
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Install the app and finish a task in it
+        shell: bash
+        run: |
+          echo "PI_FLEET_APP=$(node scripts/install-app.mjs)" >> "$GITHUB_ENV"
+      - name: Run the desktop tests against the installed app
+        if: runner.os != 'Linux'
+        run: npx vitest run test/desktop.test.ts
+      - name: Run the desktop tests against the installed app
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npx vitest run test/desktop.test.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [npm-install, installer]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - run: npm pack --pack-destination assets
+      - run: gh release create "$GITHUB_REF_NAME" assets/* --title "$GITHUB_REF_NAME" --notes "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/CHANGELOG.md) and [GETTING_STARTED.md](https://github.com/${{ github.repository }}/blob/$GITHUB_REF_NAME/GETTING_STARTED.md)."
+        env:
+          GH_TOKEN: ${{ github.token }}

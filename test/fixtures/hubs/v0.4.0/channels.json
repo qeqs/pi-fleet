@@ -1,0 +1,13 @@
+{
+  "channels": [
+    {
+      "name": "group",
+      "members": [
+        "alice",
+        "bob"
+      ],
+      "supervisor": "alice",
+      "summary": "latest from user"
+    }
+  ]
+}

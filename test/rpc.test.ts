@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { PiRpc, piArgv } from "../src/rpc.ts";
+import { PiRpc, packageBinArgv, piArgv } from "../src/rpc.ts";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -26,6 +26,35 @@ function makeRpc(timeoutMs = 3000): PiRpc {
   rpc = r;
   return r;
 }
+
+describe("packageBinArgv", () => {
+  function installed(layout: string): { root: string } {
+    const top = fs.mkdtempSync(path.join(os.tmpdir(), "fleet-bin-"));
+    const pkg = path.join(top, layout, "node_modules", "@scope", "tool");
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ bin: { tool: "./cli.js" } }));
+    return { root: path.join(top, "node_modules", "pi-fleet") };
+  }
+
+  it("finds a dependency npm hoisted above pi-fleet", () => {
+    const { root } = installed(".");
+    fs.mkdirSync(root, { recursive: true });
+    expect(packageBinArgv(root, "@scope/tool", "tool")[1]).toMatch(/node_modules[\\/]@scope[\\/]tool[\\/]cli\.js$/);
+  });
+
+  it("finds a dependency nested inside pi-fleet", () => {
+    const { root } = installed("node_modules/pi-fleet");
+    expect(packageBinArgv(root, "@scope/tool", "tool")[1]).toContain("pi-fleet");
+  });
+
+  it("reads a package with a single command", () => {
+    expect(packageBinArgv(path.join(here, ".."), "tsx", "tsx")[1]).toMatch(/cli.mjs$/);
+  });
+
+  it("says what to do when one is missing", () => {
+    expect(() => packageBinArgv(os.tmpdir(), "@scope/not-there", "tool")).toThrow("@scope/not-there is not installed: reinstall pi-fleet");
+  });
+});
 
 describe("rpc framing", () => {
   it("reassembles a response split across multiple writes", async () => {

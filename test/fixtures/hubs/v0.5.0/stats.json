@@ -1,0 +1,55 @@
+{
+  "alice": {
+    "sessionFile": "/gone\\home\\.pi\\agent\\sessions\\--gone--\\2026-11-01T01-12-30-137Z_01a194aa-48b8-7095-9530-397a3902e606.jsonl",
+    "sessionId": "01a194aa-48b8-7095-9530-397a3902e606",
+    "userMessages": 2,
+    "assistantMessages": 2,
+    "toolCalls": 0,
+    "toolResults": 0,
+    "totalMessages": 5,
+    "tokens": {
+      "input": 5424,
+      "output": 40,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 5464
+    },
+    "cost": 0.016871999999999998,
+    "contextUsage": {
+      "tokens": 2794,
+      "contextWindow": 131072,
+      "percent": 2.13165283203125
+    },
+    "at": 1793495556117
+  },
+  "router": {
+    "tokens": {
+      "total": 218
+    },
+    "cost": 0.000894,
+    "at": 1793495555857
+  },
+  "bob": {
+    "sessionFile": "/gone\\home\\.pi\\agent\\sessions\\--gone--\\2026-11-01T01-12-30-688Z_01a194aa-4adf-7409-b5f4-b3c0a0b4c4c2.jsonl",
+    "sessionId": "01a194aa-4adf-7409-b5f4-b3c0a0b4c4c2",
+    "userMessages": 1,
+    "assistantMessages": 1,
+    "toolCalls": 0,
+    "toolResults": 0,
+    "totalMessages": 3,
+    "tokens": {
+      "input": 2647,
+      "output": 20,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 2667
+    },
+    "cost": 0.008241,
+    "contextUsage": {
+      "tokens": 2667,
+      "contextWindow": 131072,
+      "percent": 2.034759521484375
+    },
+    "at": 1793495559709
+  }
+}

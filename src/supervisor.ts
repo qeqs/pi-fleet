@@ -24,6 +24,7 @@ import { applyRoute } from "./extension/index.ts";
 import { ensureWorktree, mergeWorktree, repoRoot, repoSubfolder, worktreeChanges, type Worktree } from "./worktree.ts";
 import { buildTimeline } from "./timeline.ts";
 import { isTaskBoard, listTasks } from "./taskboard.ts";
+import { HUB_FORMAT, upgradeHub } from "./hubformat.ts";
 import { UsageError, budgetArg, type FleetArgs, type Limits } from "./cli.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -124,6 +125,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   // One supervisor per hub: two would both push every wake, so agents would run twice.
   const other = hub.otherSupervisor();
   if (other) throw new Error(`another supervisor (pid ${other}) is already running on ${hub.dir}. Stop it, or use --dir for a separate fleet.`);
+  const upgradedFrom = upgradeHub(hub.dir);
+  if (upgradedFrom !== null) console.log(`  hub upgraded from format ${upgradedFrom} to ${HUB_FORMAT}`);
 
   // Supervisor heartbeat: agents read this to know the supervisor is attached
   // (and will push wakes) vs. detached (they must self-wake via polling).

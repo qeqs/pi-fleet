@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Hub, isPidAlive } from "../src/hub.ts";
 import { bridgeListening } from "../src/rpc.ts";
+import { HUB_FORMAT, readHubFormat } from "../src/hubformat.ts";
 import { execFileSync } from "node:child_process";
 import { FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
 
@@ -520,6 +521,39 @@ describe("fleet end to end", () => {
     const res = await fetch(`http://127.0.0.1:${port}/tasks`, { headers: { Authorization: `Bearer ${token}` } });
     expect(await res.json()).toEqual({ ok: true, result: [] }); // no board in this project yet, which is not an error
   }, 60000);
+
+  describe("a hub from an earlier release", () => {
+    const fixtures = path.join(ROOT, "test", "fixtures", "hubs");
+
+    it.each(fs.readdirSync(fixtures))("opens one written by %s and carries on", async (tag) => {
+      fs.cpSync(path.join(fixtures, tag), path.join(tmp, `upgrade-${tag}`), { recursive: true });
+      const before = (await llmLog()).length;
+      const { proc, hub } = startFleet(`upgrade-${tag}`, ["up", "--agent", "alice", "--agent", "bob"]);
+      await firstMatch(proc, /hub upgraded from format 0 to 1[\s\S]*pi-fleet group chat/); // the old registry already says idle
+      expect(readHubFormat(hub.dir)).toBe(HUB_FORMAT);
+      expect(hub.pausedReason()).toBe(tag === "v0.6.0" ? null : "stopped by you");
+      expect(hub.readChannels().find((c) => c.name === "group")?.supervisor).toBeUndefined();
+      expect(hub.searchMessages("hello from an old release")).toHaveLength(1); // rotated into an archive by that release
+
+      await exchange(hub, "alice", `still there after ${tag}`);
+      await idle(hub, ["alice", "bob"]);
+      expect(hub.pausedReason()).toBeNull();
+      const log = (await llmLog()).slice(before);
+      expect(log.some((r) => r.conversation.includes("after the rotation"))).toBe(false); // nothing is replayed
+    }, 60000);
+
+    it("refuses one from a newer release", async () => {
+      const hubDir = path.join(tmp, "from-the-future");
+      fs.mkdirSync(hubDir, { recursive: true });
+      fs.writeFileSync(path.join(hubDir, "format.json"), JSON.stringify({ format: HUB_FORMAT + 1 }));
+      const { proc } = startFleet("from-the-future", ["up", "--agent", "alice"]);
+      const stderr: string[] = [];
+      proc.stderr!.on("data", (d) => stderr.push(String(d)));
+      const code = await new Promise((resolve) => proc.on("exit", resolve));
+      expect(code).toBe(1);
+      expect(stderr.join("")).toContain("written by a newer pi-fleet");
+    }, 30000);
+  });
 
   it("reports a run that ends in a model error", async () => {
     const { hub } = startFleet("modelerror", ["serve", "--agent", "alice"]);

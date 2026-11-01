@@ -1,0 +1,4 @@
+{"id":"a3529850-05f2-4564-9857-21024e2e92ee","ts":1793495472631,"from":"system","to":"group","kind":"system","text":"agent \"alice\" joined (cwd: /gone/project)"}
+{"id":"1e3b565b-9391-4c07-8b07-ed7630ab14fc","ts":1793495472816,"from":"system","to":"group","kind":"system","text":"agent \"bob\" joined (cwd: /gone/project)"}
+{"id":"a3b2fc21-794a-4376-869f-bb3e26f7f863","ts":1793495472973,"from":"user","to":"alice","kind":"chat","text":"hello from an old release"}
+{"id":"470c7979-7478-46eb-878c-92bb3ea2aa11","ts":1793495476985,"from":"user","to":"group","kind":"chat","text":"a message in the channel"}

@@ -1,0 +1,28 @@
+{
+  "alice": {
+    "name": "alice",
+    "pid": 28824,
+    "cwd": "/gone/project",
+    "status": "idle",
+    "startedAt": 1793495524562,
+    "lastReadOffset": 0,
+    "logFile": "/gone/hub/agents/alice.log",
+    "pipeIn": "\\\\.\\pipe\\pi-fleet-393bef53dc-in",
+    "pipeOut": "\\\\.\\pipe\\pi-fleet-393bef53dc-out",
+    "model": "fake/fake-1",
+    "sessionFile": "/gone/sessions/alice.jsonl"
+  },
+  "bob": {
+    "name": "bob",
+    "pid": 29544,
+    "cwd": "/gone/project",
+    "status": "idle",
+    "startedAt": 1793495524761,
+    "lastReadOffset": 206,
+    "logFile": "/gone/hub/agents/bob.log",
+    "pipeIn": "\\\\.\\pipe\\pi-fleet-f607dbaf92-in",
+    "pipeOut": "\\\\.\\pipe\\pi-fleet-f607dbaf92-out",
+    "model": "fake/fake-1",
+    "sessionFile": "/gone/sessions/bob.jsonl"
+  }
+}

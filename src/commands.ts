@@ -112,7 +112,7 @@ export function cmdTemplates(): void {
     console.log(`  ${name.padEnd(10)} ${tpl.description}`);
     console.log(`             agents: ${agents}`);
   }
-  console.log("\nUsage: npm run fleet -- up --template <name> [--model <model>] [--dir <dir>]");
+  console.log("\nUsage: fleet up --template <name> [--model <model>] [--dir <dir>]");
 }
 
 /**

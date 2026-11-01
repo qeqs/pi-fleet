@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hub } from "./hub.ts";
-import { PiRpc, PiRpcBridge, piArgv, type StreamingBehavior } from "./rpc.ts";
+import { PiRpc, PiRpcBridge, piArgv, type StreamingBehavior, packageBinArgv } from "./rpc.ts";
 import { isValidAgentName } from "./spec.ts";
 import type { Limits } from "./cli.ts";
 import type { Worktree } from "./worktree.ts";
@@ -177,8 +177,8 @@ export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Li
   // Spawn the bridge as a single node process (no npx/shell wrapper) so the
   // process tree is clean: supervisor -> node(bridge) -> pi. The registry pid
   // is then the bridge, and taskkill /T on it takes pi down with it.
-  const tsxCli = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
-  const bridge = spawn(process.execPath, [tsxCli, bridgeScript], {
+  const [node, tsxCli] = packageBinArgv(ROOT, "tsx", "tsx");
+  const bridge = spawn(node, [tsxCli, bridgeScript], {
     cwd: hub.dir,
     env: {
       ...process.env,

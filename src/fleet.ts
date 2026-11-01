@@ -23,6 +23,7 @@
  * Lean mode (smaller prompt for weak/local models) is auto-detected from each
  * model's context window (<16k); override with `--lean` / `--no-lean`.
  */
+import fs from "node:fs";
 import { parseArgs, UsageError, USAGE } from "./cli.ts";
 import { cmdConfig, cmdInit, cmdList, cmdLog, cmdRename, cmdStop, cmdTemplates } from "./commands.ts";
 import { cmdDoctor } from "./doctor.ts";
@@ -41,6 +42,11 @@ async function main(): Promise<void> {
     case "--help":
     case "-h":
       console.log(USAGE);
+      return;
+    case "version":
+    case "--version":
+    case "-v":
+      console.log((JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version);
       return;
     case "up": {
       const p = parseArgs(rest);
@@ -83,6 +89,6 @@ async function main(): Promise<void> {
 
 main().catch((err: Error) => {
   console.error(`fleet: ${err.message}`);
-  if (err instanceof UsageError) console.error("Run `npm run fleet -- help` for usage.");
+  if (err instanceof UsageError) console.error("Run `fleet help` for usage.");
   process.exit(err instanceof UsageError ? 2 : 1);
 });

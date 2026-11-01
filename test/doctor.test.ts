@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Hub } from "../src/hub.ts";
-import { configCheck, registryCheck, supervisorCheck } from "../src/doctor.ts";
+import { configCheck, formatCheck, registryCheck, supervisorCheck } from "../src/doctor.ts";
 
 let dir: string;
 let hub: Hub;
@@ -30,6 +30,26 @@ describe("configCheck", () => {
   it("fails on an invalid config", () => {
     fs.writeFileSync(path.join(dir, "fleet.json"), "{");
     expect(configCheck(hub)).toMatchObject({ status: "fail", detail: expect.stringContaining("invalid fleet config") });
+  });
+});
+
+describe("formatCheck", () => {
+  const formatHub = () => new Hub(fs.mkdtempSync(path.join(os.tmpdir(), "fleet-doctor-format-")));
+
+  it("is fine with a new hub", () => {
+    expect(formatCheck(formatHub()).status).toBe("ok");
+  });
+
+  it("warns that an older hub will be upgraded", () => {
+    const hub = formatHub();
+    fs.writeFileSync(hub.messagesFile, "");
+    expect(formatCheck(hub)).toMatchObject({ status: "warn", detail: expect.stringContaining("upgrades it") });
+  });
+
+  it("fails on a hub from a newer release", () => {
+    const hub = formatHub();
+    fs.writeFileSync(path.join(hub.dir, "format.json"), JSON.stringify({ format: 999 }));
+    expect(formatCheck(hub).status).toBe("fail");
   });
 });
 

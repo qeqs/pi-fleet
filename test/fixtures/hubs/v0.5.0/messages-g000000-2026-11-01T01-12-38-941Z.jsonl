@@ -1,0 +1,6 @@
+{"id":"85c4ee23-546a-4516-abbd-f7eb3d8be028","ts":1793495550593,"from":"system","to":"group","kind":"system","text":"agent \"alice\" joined (cwd: /gone/project)"}
+{"id":"3ae78411-8230-40ea-acdf-ba6c7180d4fd","ts":1793495550838,"from":"system","to":"group","kind":"system","text":"agent \"bob\" joined (cwd: /gone/project)"}
+{"id":"5b800c73-526b-4063-8c53-8672e90849e1","ts":1793495550924,"from":"user","to":"alice","kind":"chat","text":"hello from an old release"}
+{"id":"1d5c2f98-e810-4b97-bc64-feb2177082c7","ts":1793495554932,"from":"user","to":"group","kind":"chat","text":"a message in the channel"}
+{"id":"8ce7e424-3499-48b3-a170-865f1b4316d5","ts":1793495555860,"from":"router","to":"alice","kind":"chat","text":"[#group] user said: \"a message in the channel\"\nChannel summary: latest from user\nRespond with fleet_send to \"group\" if a reply is needed.","replyTo":"1d5c2f98-e810-4b97-bc64-feb2177082c7"}
+{"id":"05edd0d7-0b8a-4969-8a9a-be4770dd23af","ts":1793495555860,"from":"router","to":"group","kind":"activity","text":"routed to alice"}

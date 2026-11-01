@@ -2,30 +2,36 @@
  * pi-fleet desktop app (Electron).
  *
  * The main process launches the fleet supervisor (`fleet up --gui`) as a child
- * process and loads its web UI into a native BrowserWindow. The fleet composition
- * comes from <root>/.pi-fleet/fleet.json (see `fleet init`), so the app knows what
- * to spawn without a long CLI. Closing the window kills the supervisor's process
- * tree (supervisor -> bridges -> pi).
+ * process and loads its web UI into a native BrowserWindow. Electron's own Node runs
+ * the supervisor, so an installed app needs no Node on the machine. Each project
+ * folder has its own fleet in <folder>/.pi-fleet (see `fleet init`), so the app knows
+ * what to spawn without a long CLI, and File > Open Project moves between them.
+ * Closing the window kills the supervisor's process tree (supervisor -> bridges -> pi).
  *
  * Run with: npm run desktop
  */
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, shell } from "electron";
 import { spawn, execSync } from "node:child_process";
 import crypto from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readProjects, rememberProject, startingProject } from "./projects.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const HUB_DIR = path.join(ROOT, ".pi-fleet");
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const FLEET = path.join(ROOT, "src", "fleet.ts");
 const GUI_TOKEN = crypto.randomBytes(24).toString("base64url");
 
 let supervisor = null;
+let supervisorUp = false; // once it has served the page, losing it ends the app
 let supervisorOutput = "";
+let quitting = false;
 let mainWindow = null;
+let project = null;
+
+const projectsFile = () => path.join(app.getPath("userData"), "projects.json");
 
 /** Find a free TCP port on localhost. */
 function findFreePort() {
@@ -54,27 +60,30 @@ function waitForHttp(url, timeoutMs = 90000) {
   });
 }
 
-async function startSupervisor() {
+async function startSupervisor(dir) {
   const port = await findFreePort();
-  supervisor = spawn(
-    "node",
-    [TSX_CLI, FLEET, "up", "--gui", "--port", String(port), "--dir", HUB_DIR],
-    { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PI_FLEET_GUI_TOKEN: GUI_TOKEN } },
+  supervisorOutput = "";
+  supervisorUp = false;
+  const child = spawn(
+    process.execPath,
+    [TSX_CLI, FLEET, "up", "--gui", "--port", String(port), "--dir", path.join(dir, ".pi-fleet")],
+    { cwd: dir, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PI_FLEET_GUI_TOKEN: GUI_TOKEN } },
   );
+  supervisor = child;
   const tag = (s) => String(s).split("\n").map((l) => `[supervisor] ${l}`).join("\n");
-  supervisor.stdout.on("data", (d) => process.stdout.write(tag(d)));
-  supervisor.stderr.on("data", (d) => {
+  child.stdout.on("data", (d) => process.stdout.write(tag(d)));
+  child.stderr.on("data", (d) => {
     process.stderr.write(tag(d));
     supervisorOutput = (supervisorOutput + d).slice(-2000);
   });
-  supervisor.on("exit", (code) => {
+  child.on("exit", (code) => {
     console.log(`[desktop] supervisor exited (${code})`);
-    if (mainWindow && !mainWindow.isDestroyed()) app.quit();
+    if (child === supervisor && supervisorUp && mainWindow && !mainWindow.isDestroyed()) app.quit();
   });
   // it can die before the page ever answers: the wait below must not outlast it
   const exited = new Promise((_, reject) => {
-    supervisor.once("error", (e) => reject(new Error(`could not start the supervisor: ${e.message}`)));
-    supervisor.once("exit", (code) => reject(new Error(supervisorOutput.trim() || `the supervisor exited (${code})`)));
+    child.once("error", (e) => reject(new Error(`could not start the supervisor: ${e.message}`)));
+    child.once("exit", (code) => reject(new Error(supervisorOutput.trim() || `the supervisor exited (${code})`)));
   });
   return { url: `http://127.0.0.1:${port}/?token=${GUI_TOKEN}`, exited };
 }
@@ -82,19 +91,72 @@ async function startSupervisor() {
 function stopSupervisor() {
   if (!supervisor) return;
   const pid = supervisor.pid;
+  supervisor = null;
   try {
     if (process.platform === "win32") execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" });
     else process.kill(pid, "SIGTERM");
   } catch {
     // already gone
   }
-  supervisor = null;
 }
 
-async function createWindow() {
-  const { url, exited } = await startSupervisor();
+function buildMenu() {
+  const recent = readProjects(projectsFile());
+  const file = {
+    label: "File",
+    submenu: [
+      { label: "Open Project…", accelerator: "CmdOrCtrl+O", click: () => chooseAndOpen() },
+      { label: "Open Recent", enabled: recent.length > 0, submenu: recent.map((dir) => ({ label: dir, click: () => switchTo(dir) })) },
+      { type: "separator" },
+      { role: process.platform === "darwin" ? "close" : "quit" },
+    ],
+  };
+  const app = process.platform === "darwin" ? [{ role: "appMenu" }] : [];
+  Menu.setApplicationMenu(Menu.buildFromTemplate([...app, file, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" }]));
+}
+
+async function chooseProject() {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: "Choose the folder your agents will work in",
+    buttonLabel: "Open Project",
+    properties: ["openDirectory", "createDirectory"],
+  });
+  return canceled ? null : filePaths[0];
+}
+
+async function chooseAndOpen() {
+  const dir = await chooseProject();
+  if (dir) await switchTo(dir);
+}
+
+/** Start a project's fleet and show it. Whatever was open has already been stopped. */
+async function openProject(dir) {
+  const { url, exited } = await startSupervisor(dir);
   await Promise.race([waitForHttp(url), exited]);
   exited.catch(() => {}); // from here on, the exit handler above deals with it
+  supervisorUp = true;
+  project = dir;
+  rememberProject(projectsFile(), dir);
+  buildMenu();
+  if (!mainWindow) createWindow();
+  await mainWindow.loadURL(url);
+}
+
+async function switchTo(dir) {
+  if (dir === project) return;
+  const previous = project;
+  stopSupervisor();
+  try {
+    await openProject(dir);
+  } catch (e) {
+    stopSupervisor();
+    if (quitting) return;
+    dialog.showErrorBox(`pi-fleet could not open ${dir}`, e.message);
+    if (previous) await openProject(previous);
+  }
+}
+
+function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 840,
@@ -102,7 +164,11 @@ async function createWindow() {
     backgroundColor: "#0d1117",
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
-  await mainWindow.loadURL(url);
+  // the page's title carries unread counts: keep those, and say which project this is
+  mainWindow.on("page-title-updated", (e, title) => {
+    e.preventDefault();
+    mainWindow.setTitle(`${title} — ${path.basename(project)}`);
+  });
   // open external links in the system browser, not new Electron windows
   mainWindow.webContents.setWindowOpenHandler(({ url: u }) => {
     if (u.startsWith("http")) shell.openExternal(u);
@@ -111,19 +177,32 @@ async function createWindow() {
   mainWindow.on("closed", () => (mainWindow = null));
 }
 
+async function launch() {
+  buildMenu();
+  const dir = process.env.PI_FLEET_PROJECT ?? startingProject(projectsFile()) ?? (await chooseProject());
+  if (!dir) return app.quit();
+  await openProject(dir);
+}
+
 app.whenReady().then(() => {
-  createWindow().catch((e) => {
+  launch().catch((e) => {
     console.error("[desktop] failed to start:", e.message);
     stopSupervisor();
+    if (quitting) return; // a page that was still loading fails as the app goes
     dialog.showErrorBox("pi-fleet could not start", e.message);
     app.quit();
   });
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow().catch(console.error);
+    if (BrowserWindow.getAllWindows().length === 0) launch().catch(console.error);
   });
 });
 
 app.on("window-all-closed", () => {
   stopSupervisor();
+  project = null;
   if (process.platform !== "darwin") app.quit();
 });
+
+app.on("before-quit", () => (quitting = true));
+// app.quit() closes the windows without the event above
+app.on("will-quit", stopSupervisor);

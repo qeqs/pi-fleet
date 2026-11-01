@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const ROOT = path.resolve(__dirname, "..");
+export const ROOT = path.resolve(import.meta.dirname, "..");
 export const TSX = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 export const FLEET = path.join(ROOT, "src", "fleet.ts");
 export const MODEL = "fake/fake-1";

@@ -5,7 +5,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import fs from "node:fs";
+import http from "node:http";
 import { createRequire } from "node:module";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { _electron, type ElectronApplication, type Page } from "playwright-core";
@@ -189,8 +191,22 @@ describe.skipIf(!executable)("the desktop app", () => {
     const { userData, one } = folders("navigate");
     const page = await launch(userData, { PI_FLEET_PROJECT: one });
     await page.waitForSelector("#conversation", { timeout: 60000 });
-    await page.evaluate(() => { location.href = "http://192.0.2.1/"; }).catch(() => {});
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await app!.evaluate(({ shell }) => {
+      shell.openExternal = async () => {}; // the link would go to the browser: not in a test
+    });
+    let requests = 0;
+    const elsewhere = http.createServer((_req, res) => {
+      requests++;
+      res.end("<title>elsewhere</title>");
+    });
+    await new Promise<void>((resolve) => elsewhere.listen(0, "127.0.0.1", resolve));
+    const { port } = elsewhere.address() as AddressInfo;
+    await page.evaluate((target) => {
+      location.href = target;
+    }, `http://localhost:${port}/`).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    elsewhere.close();
+    expect(requests).toBe(0);
     expect(new URL(page.url()).hostname).toBe("127.0.0.1");
   }, 120000);
 

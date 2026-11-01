@@ -41,8 +41,14 @@ describe("a hostile repository", () => {
   it.runIf(process.platform === "win32")("cannot replace git with a program in the folder", () => {
     const folder = path.join(tmp, "hostile");
     fs.mkdirSync(folder);
-    fs.copyFileSync(path.join(process.env.SystemRoot!, "System32", "whoami.exe"), path.join(folder, "git.exe"));
-    expect(repoRoot(folder)).toBeNull(); // whoami would have answered with a name
+    fs.copyFileSync(path.join(process.env.SystemRoot!, "System32", "cmd.exe"), path.join(folder, "git.exe"));
+    const safeSearch = process.env.NoDefaultCurrentDirectoryInExePath;
+    delete process.env.NoDefaultCurrentDirectoryInExePath; // Windows' default: some shells set it
+    try {
+      expect(repoRoot(folder)).toBeNull(); // cmd would have succeeded, and printed its banner
+    } finally {
+      if (safeSearch !== undefined) process.env.NoDefaultCurrentDirectoryInExePath = safeSearch;
+    }
   });
 });
 

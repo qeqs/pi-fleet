@@ -11,6 +11,8 @@ describe("parseChatLine", () => {
     expect(parseChatLine("/help")).toEqual({ kind: "command", name: "help", args: "" });
     expect(parseChatLine("/stop alice")).toEqual({ kind: "command", name: "stop", args: "alice" });
     expect(parseChatLine("/restart alice")).toEqual({ kind: "command", name: "restart", args: "alice" });
+    expect(parseChatLine("/merge alice")).toEqual({ kind: "command", name: "merge", args: "alice" });
+    expect(parseChatLine("/diff alice")).toEqual({ kind: "command", name: "diff", args: "alice" });
     expect(parseChatLine("/new bob . fake/model planner")).toEqual({ kind: "command", name: "new", args: "bob . fake/model planner" });
     expect(parseChatLine("/channel add dev a,b")).toEqual({ kind: "command", name: "channel", args: "add dev a,b" });
   });

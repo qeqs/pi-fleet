@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Hub, isPidAlive } from "../src/hub.ts";
 import { bridgeListening } from "../src/rpc.ts";
+import { execFileSync } from "node:child_process";
 import { FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
 
 let tmp: string;
@@ -348,6 +349,176 @@ describe("fleet end to end", () => {
     expect(fs.existsSync(hubDir)).toBe(true);
     startFleet("routercrash", ["up", "--agent", "alice"]);
     await until("the waiting message to be routed", async () => (await llmLog()).find((r) => r.agent === "alice" && r.conversation.includes("left waiting")));
+  }, 60000);
+
+  describe("agents on one repository", () => {
+    function makeRepo(name: string): string {
+      const repo = path.join(tmp, name);
+      fs.mkdirSync(repo, { recursive: true });
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+      git("init", "-b", "main");
+      git("config", "user.name", "Test");
+      git("config", "user.email", "test@example.com");
+      fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+      git("add", "-A");
+      git("commit", "-m", "First");
+      return repo;
+    }
+    const inRepo = (repo: string, ...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+    const crew = (repo: string) => ["--agent", `impl1:${repo}::implementer`, "--agent", `impl2:${repo}::implementer`, "--agent", `reviewer:${repo}::reviewer`, "--worktrees"];
+    /** Requests sent together reach the reviewer in one wake, so count what it read, not its replies. */
+    const reviewedBoth = (after: number) => async () => (await llmLog()).slice(after).some((r) => r.agent === "reviewer" && r.decision.startsWith("fleet_send") && r.conversation.includes("impl1 →") && r.conversation.includes("impl2 →"));
+
+    it("two implementers change it at once, and both results merge after review", async () => {
+      const repo = makeRepo("repo-both");
+      const { hub, port, token } = await startGui("worktrees", crew(repo));
+      await idle(hub, ["impl1", "impl2", "reviewer"]);
+      const { impl1, impl2, reviewer } = hub.readAgents();
+      expect(impl1.worktree?.branch).toBe("fleet/impl1");
+      expect(impl1.cwd).not.toBe(impl2.cwd);
+      expect(reviewer.worktree).toBeUndefined();
+
+      const before = (await llmLog()).length;
+      hub.appendMessage({ from: "user", to: "impl1", kind: "chat", text: "[[write one.txt from one]]" });
+      hub.appendMessage({ from: "user", to: "impl2", kind: "chat", text: "[[write two.txt from two]]" });
+      await until("both reviews", reviewedBoth(before), 45000);
+      await idle(hub, ["impl1", "impl2", "reviewer"]);
+      expect(fs.existsSync(path.join(impl1.cwd, "one.txt"))).toBe(true);
+      expect(fs.existsSync(path.join(impl1.cwd, "two.txt"))).toBe(false);
+      expect(fs.existsSync(path.join(repo, "one.txt"))).toBe(false); // nothing lands before the merge
+
+      const diff = await (await fetch(`http://127.0.0.1:${port}/diff?agent=impl1`, { headers: { Authorization: `Bearer ${token}` } })).json();
+      expect(diff.result).toMatchObject({ branch: "fleet/impl1", base: "main", files: ["one.txt"] });
+      expect(diff.result.patch).toContain("+from one");
+
+      for (const name of ["impl1", "impl2"]) {
+        expect((await (await guiPost(port, token, "/merge", { name })).json()).result).toEqual({ merged: true, conflicts: [] });
+      }
+      expect(fs.readFileSync(path.join(repo, "one.txt"), "utf8")).toBe("from one");
+      expect(fs.readFileSync(path.join(repo, "two.txt"), "utf8")).toBe("from two");
+      expect(inRepo(repo, "log", "--oneline")).toContain("Merge fleet/impl2");
+      expect(hub.tailMessages(50).some((m) => m.text === "fleet/impl1 was merged into main")).toBe(true);
+
+      const timeline = (await (await fetch(`http://127.0.0.1:${port}/timeline`, { headers: { Authorization: `Bearer ${token}` } })).json()).result;
+      expect(timeline.length).toBeGreaterThanOrEqual(2);
+      expect(timeline.some((t: { steps: { why: string }[] }) => t.steps.some((s) => s.why === "mention"))).toBe(true);
+      expect(timeline[0].cost).toBeTypeOf("number");
+      const told = (await llmLog()).slice(before).find((r) => r.agent === "impl1");
+      expect(told?.conversation).toContain("on branch fleet/impl1");
+    }, 90000);
+
+    it("a conflict goes back to the agent, who resolves it, and the merge then succeeds", async () => {
+      const repo = makeRepo("repo-conflict");
+      const { hub, port, token } = await startGui("conflict", crew(repo));
+      await idle(hub, ["impl1", "impl2", "reviewer"]);
+      const before = (await llmLog()).length;
+      hub.appendMessage({ from: "user", to: "impl1", kind: "chat", text: "[[write same.txt from one]]" });
+      hub.appendMessage({ from: "user", to: "impl2", kind: "chat", text: "[[write same.txt from two]]" });
+      await until("both reviews", reviewedBoth(before), 45000);
+      await idle(hub, ["impl1", "impl2", "reviewer"]);
+
+      await guiPost(port, token, "/merge", { name: "impl1" });
+      const clash = (await (await guiPost(port, token, "/merge", { name: "impl2" })).json()).result;
+      expect(clash).toEqual({ merged: false, conflicts: ["same.txt"] });
+      expect(inRepo(repo, "status", "--porcelain")).toBe(""); // the failed merge left nothing behind
+      expect(fs.readFileSync(path.join(repo, "same.txt"), "utf8")).toBe("from one");
+
+      await until("the agent to resolve it", async () => (await llmLog()).find((r) => r.agent === "impl2" && r.decision.startsWith("bash")));
+      await sleep(500);
+      await idle(hub, ["impl2"]);
+      expect((await (await guiPost(port, token, "/merge", { name: "impl2" })).json()).result).toEqual({ merged: true, conflicts: [] });
+    }, 90000);
+
+    it("keeps its worktree and subfolder across a restart", async () => {
+      const repo = makeRepo("repo-restart");
+      const sub = path.join(repo, "packages", "a");
+      fs.mkdirSync(sub, { recursive: true });
+      const { proc, hub } = startFleet("wt-restart", ["up", "--agent", `impl1:${sub}::implementer`, "--worktrees"]);
+      await idle(hub, ["impl1"]);
+      const first = hub.readAgents().impl1.cwd;
+      expect(first).toMatch(/worktrees[\\/]impl1[\\/]packages[\\/]a[\\/]?$/);
+      const restarted = firstMatch(proc, /↻ \[impl1\] restarted/);
+      proc.stdin!.write("/restart impl1\n");
+      await restarted;
+      await idle(hub, ["impl1"]);
+      expect(hub.readAgents().impl1.cwd).toBe(first);
+      expect(hub.readAgents().impl1.worktree?.branch).toBe("fleet/impl1");
+    }, 60000);
+
+    it("works from the terminal too", async () => {
+      const repo = makeRepo("repo-terminal");
+      const { proc, hub } = startFleet("wt-terminal", ["up", "--agent", `impl1:${repo}::implementer`, "--agent", `reviewer:${repo}::reviewer`, "--worktrees"]);
+      await idle(hub, ["impl1", "reviewer"]);
+      const before = (await llmLog()).length;
+      hub.appendMessage({ from: "user", to: "impl1", kind: "chat", text: "[[write term.txt from the terminal]]" });
+      await until("the file", async () => (await llmLog()).slice(before).some((r) => r.agent === "impl1" && r.decision === "text"), 30000);
+      await idle(hub, ["impl1"]);
+      const listed = firstMatch(proc, /fleet\/impl1 changes, against main:\s+term\.txt/);
+      proc.stdin!.write("/diff impl1\n");
+      await listed;
+      const merged = firstMatch(proc, /^\s*merged\s*$/m);
+      proc.stdin!.write("/merge impl1\n");
+      await merged;
+      expect(fs.readFileSync(path.join(repo, "term.txt"), "utf8")).toBe("from the terminal");
+    }, 60000);
+
+    it("will not merge while the agent is working", async () => {
+      const repo = makeRepo("repo-busy");
+      const { hub, port, token } = await startGui("wt-busy", ["--agent", `impl1:${repo}::implementer`, "--worktrees"]);
+      await idle(hub, ["impl1"]);
+      hub.appendMessage({ from: "user", to: "impl1", kind: "chat", text: "[[slow 3]]" });
+      await until("impl1 to start", () => hub.readAgents().impl1.status === "busy");
+      expect(await (await guiPost(port, token, "/merge", { name: "impl1" })).json()).toMatchObject({ ok: false, error: '"impl1" is still working: merge when it has finished' });
+    }, 60000);
+
+    it("says so at once when the repository cannot be branched", async () => {
+      const empty = path.join(tmp, "repo-empty");
+      fs.mkdirSync(empty, { recursive: true });
+      execFileSync("git", ["init"], { cwd: empty, stdio: "ignore" });
+      const { proc } = startFleet("wt-empty", ["up", "--agent", `impl1:${empty}::implementer`, "--worktrees"]);
+      const stderr: string[] = [];
+      proc.stderr!.on("data", (d) => stderr.push(String(d)));
+      await new Promise((resolve) => proc.on("exit", resolve));
+      expect(stderr.join("")).toContain("has no commits yet");
+    }, 30000);
+
+    it("runs in place when the folder is not a git repository, and says so", async () => {
+      const plain = path.join(tmp, "not-a-repo");
+      fs.mkdirSync(plain, { recursive: true });
+      const { proc, hub } = startFleet("no-repo", ["up", "--agent", `impl1:${plain}::implementer`, "--worktrees"]);
+      await firstMatch(proc, /is not a git repository, so it works in place/);
+      await idle(hub, ["impl1"]);
+      expect(hub.readAgents().impl1.worktree).toBeUndefined();
+    }, 60000);
+  });
+
+  it("gives agents the task board fleet.json names", async () => {
+    const hubDir = path.join(tmp, "board-config");
+    fs.mkdirSync(hubDir, { recursive: true });
+    fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ taskboard: "beads", agents: [{ name: "bea" }] }));
+    const { hub } = startFleet("board-config", ["up"]);
+    await idle(hub, ["bea"]);
+    const asked = await exchange(hub, "bea", "which board");
+    expect(asked.conversation).toContain("beads");
+    expect(asked.conversation).not.toContain("openspec");
+  }, 60000);
+
+  it("still takes the task board from the environment", async () => {
+    env.PI_FLEET_TASKBOARD = "beads";
+    try {
+      const { hub } = startFleet("board-env", ["up", "--agent", "ben"]);
+      await idle(hub, ["ben"]);
+      expect((await exchange(hub, "ben", "which board now")).conversation).toContain("beads");
+    } finally {
+      delete env.PI_FLEET_TASKBOARD;
+    }
+  }, 60000);
+
+  it("reads the task board for the GUI", async () => {
+    const { hub, port, token } = await startGui("board", ["--agent", "alice"]);
+    await idle(hub, ["alice"]);
+    const res = await fetch(`http://127.0.0.1:${port}/tasks`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(await res.json()).toEqual({ ok: true, result: [] }); // no board in this project yet, which is not an error
   }, 60000);
 
   it("reports a run that ends in a model error", async () => {

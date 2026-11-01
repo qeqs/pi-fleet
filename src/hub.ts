@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import type { Worktree } from "./worktree.ts";
 
 export type MessageKind = "chat" | "system" | "activity";
 
@@ -137,6 +138,8 @@ export interface AgentInfo {
   sessionFile?: string;
   /** how far this agent's own poller got while no supervisor was attached */
   handled?: BusCursor;
+  /** the agent's own git worktree and branch, if it works in one */
+  worktree?: Worktree;
 }
 
 export class Hub {
@@ -587,6 +590,31 @@ export class Hub {
     this.ensureDir();
     fs.writeFileSync(this.guiTokenFile, token, { encoding: "utf8", mode: 0o600 });
     return token;
+  }
+
+  // ---------- spending per request, for the timeline ----------
+
+  /** What has been spent so far, across every agent and the router. */
+  totalSpent(): number {
+    return Object.values(this.readStats()).reduce((sum, s) => sum + Number(s.cost ?? 0), 0);
+  }
+
+  private get spendFile(): string {
+    return path.join(this.dir, "spend.json");
+  }
+
+  readSpend(): Record<string, number> {
+    try {
+      return JSON.parse(fs.readFileSync(this.spendFile, "utf8")) as Record<string, number>;
+    } catch {
+      return {};
+    }
+  }
+
+  /** Note the total as a request comes in; the next request's total gives this one's cost. */
+  markSpend(messageId: string): void {
+    this.ensureDir();
+    replaceFile(this.spendFile, JSON.stringify({ ...this.readSpend(), [messageId]: this.totalSpent() }));
   }
 
   // ---------- per-agent session stats (cost / tokens) ----------

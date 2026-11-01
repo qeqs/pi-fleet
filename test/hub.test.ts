@@ -340,6 +340,16 @@ describe("router failover", () => {
   });
 });
 
+describe("spending per request", () => {
+  it("records the total as a request comes in", () => {
+    hub.saveStats("a", { cost: 0.5 });
+    hub.saveStats("b", { cost: 0.25 });
+    hub.markSpend("m1");
+    expect(hub.readSpend()).toEqual({ m1: 0.75 });
+    expect(hub.totalSpent()).toBe(0.75);
+  });
+});
+
 describe("searchMessages", () => {
   const say = (text: string) => hub.appendMessage({ from: "a", to: "group", kind: "chat", text });
 

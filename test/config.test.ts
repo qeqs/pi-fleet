@@ -50,6 +50,18 @@ describe("fleet.json budget and approvals", () => {
   });
 });
 
+describe("fleet.json worktrees and task board", () => {
+  it("reads them", () => {
+    write({ worktrees: true, taskboard: "beads", agents: [{ name: "a", worktree: false }] });
+    expect(loadFleetConfig(dir)).toMatchObject({ worktrees: true, taskboard: "beads", agents: [{ name: "a", worktree: false }] });
+  });
+
+  it("refuses an unknown task board", () => {
+    write({ taskboard: "jira", agents: [] });
+    expect(() => loadFleetConfig(dir)).toThrow(/"taskboard" must be "openspec" or "beads"/);
+  });
+});
+
 describe("checkFleetConfig", () => {
   it("accepts what the GUI sends", () => {
     expect(checkFleetConfig({ defaultModel: "a/b", maxTurns: 10, agents: [{ name: "x", role: "planner" }] }, "form")).toMatchObject({ maxTurns: 10 });

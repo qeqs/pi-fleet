@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hub } from "../src/hub.ts";
 import { MAX_MESSAGE_LEN } from "../src/hub.ts";
-import fleetExtension, { groupWakesAgent, buildLookup, createPoller, fleetPrompt, rolePrompt, admitMessage, TASKBOARD } from "../src/extension/index.ts";
+import fleetExtension, { groupWakesAgent, buildLookup, createPoller, fleetPrompt, rolePrompt, worktreePrompt, admitMessage, TASKBOARD } from "../src/extension/index.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
@@ -420,6 +420,19 @@ describe("role presets", () => {
   it("adds nothing when no role is set", () => {
     expect(fleetPrompt("alice", false, "roster")).not.toContain("Your role:");
     expect(rolePrompt(undefined)).toBe("");
+  });
+});
+
+describe("working in a worktree", () => {
+  it("tells the agent how its work reaches everyone else", () => {
+    const prompt = worktreePrompt("fleet/alice");
+    expect(prompt).toContain("fleet/alice");
+    expect(prompt).toContain("Do not merge");
+    expect(prompt).toContain("full path");
+  });
+
+  it("says nothing to an agent with no worktree", () => {
+    expect(worktreePrompt(undefined)).toBe("");
   });
 });
 

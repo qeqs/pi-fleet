@@ -93,6 +93,10 @@
   .hit{padding:7px 10px;border:1px solid var(--border);border-radius:7px;margin-bottom:6px;cursor:pointer;font-size:12px;word-break:break-word}
   .hit:hover{background:var(--panel2)}
   .hit .hmeta{color:var(--muted);display:block;margin-bottom:2px}
+  .diff{background:#0a0e14;border:1px solid var(--border);border-radius:6px;padding:8px;font-size:12px;overflow:auto;max-height:50vh;margin:8px 0;white-space:pre}
+  .diff .add{color:var(--green)}.diff .del{color:var(--red)}.diff .hunk{color:var(--accent)}
+  .step{padding:2px 0 2px 12px;color:var(--muted);font-size:12px;word-break:break-word}
+  .step b{color:var(--text);font-weight:600}
   .chat-header select{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:12px;max-width:220px}
   .bubble a{color:var(--accent)}
   .thinking{margin:6px 0;border:1px dashed #3a3f4a;border-radius:8px;background:#12161d}
@@ -194,6 +198,8 @@
       <button data-tab="mcp">MCP</button>
       <button data-tab="usage">Usage</button>
       <button data-tab="search">Search</button>
+      <button data-tab="tasks">Tasks</button>
+      <button data-tab="timeline">Timeline</button>
     </div>
     <div class="mbody" id="mbody"></div>
   </div>
@@ -240,6 +246,7 @@
     templates: [],         // crews for the first-run screen
     defaultModel: "",      // the model new agents get, if set
     models: [],            // every model pi knows, as provider/id
+    changesOf: "",         // the agent whose changes are on show
     openBlocks: {},        // tool cards and details a person has opened, by key
     drafts: {},            // unsent text per chat, kept across re-renders and reconnects
     unread: {},            // new messages per chat since it was last open
@@ -471,6 +478,7 @@
           '<button data-act="rename">Name</button>' +
           '<button data-act="compact" title="Compact context">Compact</button>' +
           '<button data-act="abort" class="danger" title="Abort the current run">Abort run</button>' +
+          (a.info && a.info.worktree ? '<button data-act="changes" title="See and merge what it changed">Changes</button>' : "") +
           '<button data-act="restart" title="Restart it; it keeps its conversation">Restart</button>' +
           '<button data-act="stop-agent" class="danger" title="Stop this agent">Stop agent</button>') +
       '<button data-act="remove" class="danger" title="Remove this agent from the fleet">Remove</button>' +
@@ -636,6 +644,23 @@
     var tab = state.settingsTab;
     if (tab === "fleet") {
       renderFleetTab();
+    } else if (tab === "changes") {
+      renderChanges();
+    } else if (tab === "tasks") {
+      mbodyEl.innerHTML = '<h3>Tasks</h3><div class="stat">Loading…</div>';
+      get("/tasks").then(function (r) {
+        if (state.settingsTab !== "tasks") return;
+        var tasks = r.result || [];
+        mbodyEl.innerHTML = "<h3>Tasks</h3>" + (!r.ok ? '<div class="stat">Could not read the task board: ' + esc(r.error) + "</div>" : !tasks.length ? '<div class="stat">No tasks on the board yet.</div>' : tasks.map(function (t) {
+          return '<div class="mrow"><span class="nm">' + esc(t.title) + '</span><span class="desc">' + (t.total ? esc(t.done) + " of " + esc(t.total) + " done" : "") + '</span><span class="stat">' + esc(t.status) + "</span></div>";
+        }).join(""));
+      });
+    } else if (tab === "timeline") {
+      get("/timeline").then(function (r) {
+        if (state.settingsTab !== "timeline") return;
+        var tasks = (r.result || []).slice().reverse();
+        mbodyEl.innerHTML = "<h3>Timeline</h3>" + (tasks.length ? tasks.map(renderTimelineTask).join("") : '<div class="stat">Nothing has been asked yet.</div>');
+      });
     } else if (tab === "search") {
       mbodyEl.innerHTML = '<h3>Search history</h3><div class="field"><input id="searchInput" placeholder="Search every message, including archived ones"></div><div id="searchHits"></div>';
       var searchInput = document.getElementById("searchInput");
@@ -738,6 +763,47 @@
       };
     }
   }
+  var WHY = { routed: "routed to", mention: "mentioned", direct: "messaged", channel: "posted in" };
+
+  function renderTimelineTask(t) {
+    var cost = t.cost != null ? " · $" + Number(t.cost).toFixed(4) : "";
+    var head = '<div class="stat"><b>' + esc(t.text.slice(0, 120)) + "</b> " + time(t.ts) + cost + "</div>";
+    return '<div class="hit" style="cursor:default">' + head + t.steps.map(function (s) {
+      return '<div class="step"><b>' + esc(s.from) + "</b> " + esc(WHY[s.why]) + " <b>" + esc(s.to) + "</b>: " + esc(s.text.slice(0, 100)) + "</div>";
+    }).join("") + "</div>";
+  }
+
+  function renderDiff(patch) {
+    return patch.split("\n").map(function (line) {
+      var cls = /^\+/.test(line) ? "add" : /^-/.test(line) ? "del" : /^@@/.test(line) ? "hunk" : "";
+      return '<span class="' + cls + '">' + esc(line) + "</span>";
+    }).join("\n");
+  }
+
+  function renderChanges() {
+    var name = state.changesOf;
+    mbodyEl.innerHTML = "<h3>Changes by @" + esc(name) + '</h3><div class="stat">Loading…</div>';
+    get("/diff?agent=" + encodeURIComponent(name)).then(function (r) {
+      if (state.settingsTab !== "changes") return;
+      if (!r.ok) { mbodyEl.innerHTML = '<div class="stat">' + esc(r.error) + "</div>"; return; }
+      var c = r.result;
+      mbodyEl.innerHTML = "<h3>Changes by @" + esc(name) + '</h3><div class="stat">' + esc(c.branch) + " against " + esc(c.base) + ": " + c.files.length + " file(s)</div>" +
+        (c.files.length ? '<pre class="diff">' + renderDiff(c.patch) + '</pre><button class="plain" id="mergeBtn">Merge into ' + esc(c.base) + "</button>" : "") +
+        '<div class="stat" id="mergeStatus" style="margin-top:8px"></div>';
+      var btn = document.getElementById("mergeBtn");
+      if (btn) btn.onclick = function () {
+        btn.disabled = true;
+        post("/merge", { name: name }).then(function (m) {
+          btn.disabled = false;
+          var status = document.getElementById("mergeStatus");
+          if (!m.ok) status.textContent = "Not merged: " + m.error;
+          else if (m.result.conflicts.length) status.textContent = "Conflicts in " + m.result.conflicts.join(", ") + ". @" + name + " has been asked to resolve them.";
+          else status.textContent = m.result.merged ? "Merged." : "Nothing to merge.";
+        });
+      };
+    });
+  }
+
   var ROLES = ["", "planner", "implementer", "reviewer", "supervisor"];
 
   function agentRow(a) {
@@ -925,7 +991,8 @@
       else if (act === "manage-channel") { state.settingsTab = "channels"; syncTabs(); renderSettings(); overlayEl.classList.add("show"); }
       return;
     }
-    if (act === "restart") post("/agents/restart", { name: name }).then(reportFailure);
+    if (act === "changes") { state.changesOf = name; state.settingsTab = "changes"; syncTabs(); renderSettings(); overlayEl.classList.add("show"); }
+    else if (act === "restart") post("/agents/restart", { name: name }).then(reportFailure);
     else if (act === "stop-agent") post("/agents/stop", { name: name }).then(reportFailure);
     else if (act === "remove") confirmRemove(name);
     else if (act === "new-session") rpc(name, "new_session").then(function () { state.conv[name] = { items: [], live: null }; renderConversation(); });

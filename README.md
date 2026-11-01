@@ -178,6 +178,8 @@ Group chat input:
 | `/resume` | lift a pause and deliver the messages it held back |
 | `/answer name text` | answer an agent's question |
 | `/budget N` | change the spending limit, in dollars |
+| `/diff name` | list what an agent changed in its worktree |
+| `/merge name` | merge an agent's worktree into its base branch |
 | `/help` | list these commands |
 | `/quit` | stop all, exit |
 
@@ -217,6 +219,10 @@ Everything day to day happens in the page, with no terminal or config file:
 - **Settings**: `Fleet` edits `fleet.json`, `Channels` manages channels and who routes them
   (including `#group`), `Usage` shows spending and the limit, `Search` finds any message,
   archives included. `Clear` hides a channel's messages for everyone; they stay searchable.
+- **Reviewing work**: an agent in a worktree has a `Changes` button, showing its diff and a
+  `Merge` button. Settings also has `Tasks`, the agents' task board, and `Timeline`, which
+  shows for each request who woke whom, why, and what it cost. Costs are the spending between
+  one request and the next, so requests that overlap share it.
 - **Staying informed**: unread counts in the sidebar and the page title, and a desktop
   notification when an agent asks you something or the fleet pauses while the page is hidden.
 
@@ -259,6 +265,8 @@ npm run fleet -- config    # show it
 ```json
 {
   "defaultModel": "provider/model",
+  "worktrees": true,
+  "taskboard": "openspec",
   "agents": [
     { "name": "planner", "cwd": ".", "role": "planner" },
     { "name": "worker", "cwd": "./my-project", "model": "other/model", "role": "implementer" }
@@ -365,13 +373,39 @@ Run `openspec init` in a project cwd first if it has no `openspec/` directory.
 
 ## Task board (beads)
 
-OpenSpec is the default task board, but the fleet can use **beads** (the `bd` CLI) instead. Set `PI_FLEET_TASKBOARD=beads` when launching — the supervisor passes it to the agents, which then get a `beads` tool (instead of `openspec`) and a task-board-aware prompt:
+OpenSpec is the default task board, but the fleet can use **beads** (the `bd` CLI) instead. Set `"taskboard": "beads"` in `fleet.json`, or pass `--taskboard beads`. Agents then get a `beads` tool (instead of `openspec`) and a task-board-aware prompt, and Settings → Tasks shows that board. `PI_FLEET_TASKBOARD=beads` still works when neither is set.
 
 ```bash
-PI_FLEET_TASKBOARD=beads npm run fleet -- up --agent "worker:./my-project"
+npm run fleet -- up --taskboard beads --agent "worker:./my-project"
 ```
 
 Requires `bd` on PATH (on Windows, `bd.exe`). Run `bd init` once in a project cwd before agents use it. The agent creates issues (`bd create <title>`), lists them (`bd list`), and closes them when done (`bd close <id>`).
+
+## Parallel work
+
+With `--worktrees` (or `"worktrees": true` in `fleet.json`), implementers and agents with no role
+each get a git worktree under `<hub>/worktrees/<agent>` and a branch `fleet/<agent>`, so two of
+them can change one repository at once without touching each other's files or the checkout you
+are on. Reviewers and planners stay in the main checkout and read the path an implementer gives
+them. `"worktree": true` or `false` on an agent in `fleet.json` overrides this.
+
+```bash
+npm run fleet -- up --worktrees \
+  --agent "impl1:./my-project::implementer" \
+  --agent "impl2:./my-project::implementer" \
+  --agent "reviewer:./my-project::reviewer"
+```
+
+When a review is done, open `Changes` on the agent in the GUI and press `Merge`, or use `/diff`
+and `/merge` in the terminal. Merging commits whatever the agent left uncommitted, merges its
+branch into the branch that was checked out when the worktree was made, and brings the agent up
+to date. It refuses while the agent is working, while that branch is not checked out, and while
+it has uncommitted changes. If the merge conflicts, nothing changes: the agent is asked to merge
+the base into its branch and resolve it, and you merge again once it says it is done.
+
+A worktree holds tracked files only, so each one needs its own install step, such as `npm ci`.
+Removing an agent leaves its branch and worktree in place. In a folder that is not a git
+repository, the agent works in place and the fleet says so.
 
 ## Files
 
@@ -387,6 +421,9 @@ src/doctor.ts          fleet doctor: checks a setup
 src/restart.ts         when to bring a crashed agent back
 src/questions.ts       questions from agents to the human
 src/router.ts          the dedicated channel router: rules, then one short model call
+src/worktree.ts        a git worktree per agent: create, diff, merge
+src/taskboard.ts       reads the OpenSpec or beads board for the GUI
+src/timeline.ts        who woke whom for each request, and what it cost
 src/rpc.ts             pi RPC client (JSONL) — direct child + named-pipe bridge client
 src/bridge.ts          detached bridge process owning a pi child over named pipes
 src/hub.ts             file-based message bus + agent registry (+ rotation, stats, heartbeat)

@@ -112,12 +112,12 @@ messages wait while it works.
 
 ## 6. Safe parallel work
 
-- [ ] Optional git worktree and branch per agent
-- [ ] Diff view per agent or task in the GUI
-- [ ] Merge flow from an agent's branch after review
-- [ ] Task board in the GUI for OpenSpec and beads
-- [ ] `taskboard` in `fleet.json` instead of an environment variable
-- [ ] Timeline: who woke whom and why, with cost per task
+- [x] Optional git worktree and branch per agent
+- [x] Diff view per agent or task in the GUI
+- [x] Merge flow from an agent's branch after review
+- [x] Task board in the GUI for OpenSpec and beads
+- [x] `taskboard` in `fleet.json` instead of an environment variable
+- [x] Timeline: who woke whom and why, with cost per task
 
 **Done when:** two implementers change the same repository at once and both results merge after review, with no manual git.
 

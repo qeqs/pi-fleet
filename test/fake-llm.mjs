@@ -8,6 +8,8 @@
 //   [[router-garbage]]     -> as the router, answers with no JSON
 //   [[ask]]                -> calls ask_human (from test/ask-extension.ts)
 //   [[guarded]]            -> calls fleet_agents, for testing approvals
+//   [[write file text]]    -> writes a file, then asks the reviewer to look
+//   a merge conflict       -> merges the base into its branch, keeping its own side
 //   [[md]]                 -> answers with markdown, some of it hostile
 //   [[tool-then-slow]]     -> calls a tool, then streams slowly
 //   [[hang]]               -> never answers
@@ -72,6 +74,9 @@ function decide(agent, messages) {
   const last = messages.at(-1);
   if (agent === "router") return say(routerReply(textOf(last)));
   const lastUser = textOf([...messages].reverse().find((m) => m.role === "user"));
+  if (lastUser.includes("[[write ") && last.role === "tool" && !textOf(last).startsWith("Mentioned")) return tool("fleet_mention", { agents: ["reviewer"], text: "Please review my change." });
+  const conflict = /Merging your branch \S+ into (\S+) conflicts/.exec(lastUser);
+  if (conflict && last.role !== "tool") return tool("bash", { command: `git merge ${conflict[1]} -X ours -m "Resolve the conflict"` });
   if (lastUser.includes("[[runon]]")) return tool("fleet_agents", {});
   if (lastUser.includes("[[tool-then-slow]]")) return last.role === "tool" ? { kind: "slow", seconds: 4 } : tool("fleet_agents", {});
   if (lastUser.includes("[[repeat]]")) return tool("fleet_send", { to: "group", text: "Already done." });
@@ -87,6 +92,8 @@ function decide(agent, messages) {
     const respond = explicit ? explicit.split(",") : from === "user" ? ["planner"] : [];
     return tool("route", { channel: routing[1], respond, summary: `latest from ${from}` });
   }
+  const write = /\[\[write (\S+) ([^\]]+)\]\]/.exec(user);
+  if (write) return tool("write", { path: write[1], content: write[2] });
   if (user.includes("[[md]]")) return say(MARKDOWN);
   if (user.includes("[[ask]]")) return tool("ask_human", {});
   if (user.includes("[[guarded]]")) return tool("fleet_agents", {});

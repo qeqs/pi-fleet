@@ -12,6 +12,7 @@ import { Hub } from "./hub.ts";
 import { PiRpc, PiRpcBridge, piArgv, type StreamingBehavior } from "./rpc.ts";
 import { isValidAgentName } from "./spec.ts";
 import type { Limits } from "./cli.ts";
+import type { Worktree } from "./worktree.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EXTENSION = path.join(ROOT, "src", "extension", "index.ts");
@@ -142,7 +143,20 @@ export function killProcessTree(pid: number): void {
  * it over named pipes), then connect a PiRpcBridge client to those pipes.
  * The bridge survives the supervisor exiting, enabling detached mode + re-attach.
  */
-export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Limits, model?: string, lean = false, role?: string, extensions?: string[], sessionFile?: string, approve?: string[]): Promise<AgentHandle> {
+/** What an agent is started with, beyond its name and place. */
+export interface AgentOptions {
+  model?: string;
+  lean?: boolean;
+  role?: string;
+  extensions?: string[];
+  sessionFile?: string;
+  approve?: string[];
+  taskboard?: string;
+  worktree?: Worktree;
+}
+
+export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Limits, options: AgentOptions): Promise<AgentHandle> {
+  const { model, lean, role, extensions, sessionFile, approve, taskboard, worktree } = options;
   if (!isValidAgentName(name)) throw new Error(`invalid agent name "${name}": use letters, digits, "_" and "-" (not group, user or system)`);
   if (!fs.existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const logFile = path.resolve(hub.logFileFor(name)); // absolute: the bridge's cwd is hub.dir
@@ -179,6 +193,8 @@ export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Li
       PI_FLEET_MAX_TURNS: String(limits.maxTurns),
       PI_FLEET_MAX_HOPS: String(limits.maxHops),
       PI_FLEET_APPROVE: (approve ?? []).join(","),
+      ...(taskboard ? { PI_FLEET_TASKBOARD: taskboard } : {}),
+      ...(worktree ? { PI_FLEET_BRANCH: worktree.branch } : {}),
       ...(role ? { PI_FLEET_ROLE: role } : {}),
       ...(lean ? { PI_FLEET_LEAN: "1" } : {}),
     },
@@ -188,7 +204,7 @@ export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Li
   });
   bridge.unref();
   const bridgePid = bridge.pid ?? 0;
-  hub.updateAgent(name, { name, pid: bridgePid, cwd, status: "starting", startedAt: Date.now(), logFile, pipeIn, pipeOut, model, role });
+  hub.updateAgent(name, { name, pid: bridgePid, cwd, status: "starting", startedAt: Date.now(), logFile, pipeIn, pipeOut, model, role, worktree });
   try {
     const rpc = await PiRpcBridge.connect(pipeIn, pipeOut, bridgePid);
     return { name, cwd, rpc, model };

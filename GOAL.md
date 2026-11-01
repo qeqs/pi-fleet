@@ -21,6 +21,14 @@ Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
   in the roadmap. (Pull requests need `gh` or a token, which this environment does not have.)
 
 ## Progress log
+- 2026-11-01: Milestone 6 done (0.7.0). Real-model run on hf-space-qwen38: two implementers
+  changed one repository at once in their own worktrees, the reviewer read both worktrees and
+  approved, and both branches merged through the fleet's own `/merge` in 90s, with `main`
+  clean and no manual git. Same-file conflicts go back to the agent, covered by
+  `a conflict goes back to the agent` in `test/e2e.test.ts`. The run also showed overlapping
+  requests collapsing into one on the timeline, now fixed. Milestone 5's first CI run failed on
+  macOS: a slow history reply could wipe a live conversation. Fixed and reproduced by test
+  before v0.6.0 was tagged.
 - 2026-11-01: Milestone 5 done (0.6.0). Demonstrated by `goes from an empty app to a finished
   sdlc task` in `test/gui-browser.test.ts`: in real Chrome, from a fleet with no agents and no
   config, a person picks a crew, sends a task and sees `APPROVE`, with `fleet.json` written for

@@ -13,6 +13,8 @@
  *     "maxHops": 40,                           // optional, agent messages per human message (0 = no limit)
  *     "maxCost": 5,                            // optional, pause the fleet at this spend in dollars
  *     "routerModel": "provider/cheap-model",   // optional, model for routing channel messages
+ *     "worktrees": true,                       // optional, a git worktree per implementer
+ *     "taskboard": "openspec",                 // optional, "openspec" or "beads"
  *     "agents": [
  *       { "name": "planner", "cwd": ".", "role": "planner" },
  *       { "name": "worker",  "cwd": ".", "model": "other/model", "role": "implementer" }
@@ -22,6 +24,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isValidAgentName } from "./spec.ts";
+import { isTaskBoard, type TaskBoardKind } from "./taskboard.ts";
 
 export interface FleetAgentConfig {
   name: string;
@@ -33,6 +36,8 @@ export interface FleetAgentConfig {
   extensions?: string[];
   /** Tools this agent may only run once a person agrees. */
   approve?: string[];
+  /** Work in a separate git worktree. Overrides `worktrees` for this agent. */
+  worktree?: boolean;
 }
 
 export interface FleetConfig {
@@ -45,6 +50,10 @@ export interface FleetConfig {
   maxCost?: number;
   /** Model for routing channel messages; a cheap one is enough. */
   routerModel?: string;
+  /** Give implementers, and agents with no role, their own git worktree. */
+  worktrees?: boolean;
+  /** The agents' task board. */
+  taskboard?: TaskBoardKind;
   agents: FleetAgentConfig[];
 }
 
@@ -88,12 +97,15 @@ export function checkFleetConfig(input: unknown, source: string): FleetConfig {
     if (raw[field] !== undefined && !isLimit(raw[field])) throw new Error(`invalid ${source}: "${field}" must be a whole number (0 means no limit)`);
   }
   if (raw.maxCost !== undefined && !isBudget(raw.maxCost)) throw new Error(`invalid ${source}: "maxCost" must be a positive number of dollars`);
+  if (raw.taskboard !== undefined && !isTaskBoard(raw.taskboard)) throw new Error(`invalid ${source}: "taskboard" must be "openspec" or "beads"`);
   return {
     defaultModel: raw.defaultModel,
     maxTurns: raw.maxTurns,
     maxHops: raw.maxHops,
     maxCost: raw.maxCost,
     routerModel: raw.routerModel,
+    worktrees: raw.worktrees,
+    taskboard: raw.taskboard,
     agents: (raw.agents ?? []).map((a) => ({
       ...a,
       extensions: Array.isArray(a.extensions) ? a.extensions.filter((e): e is string => typeof e === "string") : undefined,

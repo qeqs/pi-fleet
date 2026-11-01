@@ -19,6 +19,14 @@ describe("parseArgs", () => {
     for (const cost of ["free", "0", "-1"]) expect(() => parseArgs(["--max-cost", cost])).toThrow("--max-cost needs a positive number");
   });
 
+  it("reads the worktree and task board options", () => {
+    expect(parseArgs(["--worktrees", "--taskboard", "beads"])).toMatchObject({ worktrees: true, taskboard: "beads" });
+  });
+
+  it("refuses an unknown task board", () => {
+    expect(() => parseArgs(["--taskboard", "jira"])).toThrow('--taskboard needs openspec or beads, got "jira"');
+  });
+
   it("reads the restart options", () => {
     expect(parseArgs(["--fresh", "--no-restart"])).toMatchObject({ fresh: true, noRestart: true });
   });

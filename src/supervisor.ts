@@ -21,6 +21,9 @@ import { RestartPolicy } from "./restart.ts";
 import { describeQuestion, parseAnswer, questionFrom, type Answer, type Question } from "./questions.ts";
 import { fallbackRoute, ModelRouter, parseRouterReply, routeByRules, routerPrompt, type RouteDecision } from "./router.ts";
 import { applyRoute } from "./extension/index.ts";
+import { ensureWorktree, mergeWorktree, repoRoot, repoSubfolder, worktreeChanges, type Worktree } from "./worktree.ts";
+import { buildTimeline } from "./timeline.ts";
+import { isTaskBoard, listTasks } from "./taskboard.ts";
 import { UsageError, budgetArg, type FleetArgs, type Limits } from "./cli.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -89,6 +92,34 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     maxCost: args.maxCost ?? fleetCfg?.maxCost,
   };
   const approveFor = (name: string): string[] | undefined => fleetCfg?.agents.find((a) => a.name === name)?.approve ?? args.approve;
+  const boardFromEnv = process.env.PI_FLEET_TASKBOARD;
+  const taskboard = args.taskboard ?? fleetCfg?.taskboard ?? (isTaskBoard(boardFromEnv) ? boardFromEnv : "openspec");
+
+  /** Reviewers and planners read other agents' work, so by default only those who change code branch. */
+  function wantsWorktree(name: string, role: string | undefined): boolean {
+    const own = fleetCfg?.agents.find((a) => a.name === name)?.worktree;
+    if (own !== undefined) return own;
+    return !!(args.worktrees ?? fleetCfg?.worktrees) && (role === "implementer" || !role);
+  }
+
+  /** Where an agent works: its own worktree if it has one, in the same subfolder it was asked to start in. */
+  function placeAgent(name: string, cwd: string, role: string | undefined): { cwd: string; worktree?: Worktree } {
+    const existing = hub.readAgents()[name]?.worktree;
+    if (existing) {
+      const inside = path.relative(existing.path, cwd);
+      if (!inside.startsWith("..") && !path.isAbsolute(inside)) return { cwd, worktree: existing }; // a restart: it is already there
+    }
+    if (!wantsWorktree(name, role)) return { cwd };
+    const repo = repoRoot(cwd);
+    if (!repo) {
+      print(`  ⚠ [${name}] ${cwd} is not a git repository, so it works in place, with no worktree`);
+      return { cwd };
+    }
+    const worktree = ensureWorktree(repo, hub.dir, name);
+    const place = path.join(worktree.path, repoSubfolder(cwd));
+    fs.mkdirSync(place, { recursive: true }); // a new folder is not in git yet
+    return { cwd: place, worktree };
+  }
 
   // One supervisor per hub: two would both push every wake, so agents would run twice.
   const other = hub.otherSupervisor();
@@ -300,13 +331,14 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     schedulePump(name, true);
   }
 
-  async function spawnAndTrack(name: string, cwd: string, model?: string, role?: string, extensions?: string[]) {
+  async function spawnAndTrack(name: string, startIn: string, model?: string, role?: string, extensions?: string[]) {
     if (agents.has(name)) throw new Error(`agent "${name}" already running`);
+    const { cwd, worktree } = placeAgent(name, startIn, role);
     const lean = await resolveLean(model, leanFor(name), leanCache);
     const prior = hub.readAgents()[name];
     // pi keeps sessions per directory, and writes none until the first exchange
     const resume = !args.fresh && prior?.sessionFile && prior.cwd === cwd && fs.existsSync(prior.sessionFile) ? prior.sessionFile : undefined;
-    const handle = await spawnAgent(hub, name, cwd, limits, model, lean, role, extensions, resume, approveFor(name));
+    const handle = await spawnAgent(hub, name, cwd, limits, { model, lean, role, extensions, sessionFile: resume, approve: approveFor(name), taskboard, worktree });
     spawnedHere.add(name);
     agents.set(name, handle);
     wire(handle, name);
@@ -315,7 +347,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     const roleLabel = role ? ` role=${role}` : "";
     const extLabel = extensions && extensions.length ? ` plugins=${extensions.length}` : "";
     const resumeLabel = resume ? " resumed" : "";
-    print(`  + [${name}] spawned (pid ${handle.rpc.pid}, cwd ${cwd}${modelLabel}${leanLabel}${roleLabel}${extLabel}${resumeLabel})`);
+    const branchLabel = worktree ? ` branch=${worktree.branch}` : "";
+    print(`  + [${name}] spawned (pid ${handle.rpc.pid}, cwd ${cwd}${modelLabel}${leanLabel}${roleLabel}${extLabel}${branchLabel}${resumeLabel})`);
     gui?.broadcast("agent_added", hub.readAgents()[name]);
     // pi answers its first RPC once booted, which is when the agent turns idle
     handle.rpc.getState().then(
@@ -508,6 +541,10 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         readConfig: () => loadFleetConfig(hub.dir) ?? { agents: [] },
         writeConfig: (config) => saveFleetConfig(hub.dir, checkFleetConfig(config, "fleet config")),
         search: (query) => hub.searchMessages(query),
+        diff: (agent) => worktreeChanges(worktreeOf(agent)),
+        merge: mergeAgent,
+        tasks: () => listTasks(taskboard, ROOT, baseCwd),
+        timeline: () => buildTimeline(hub.tailMessages(2000), hub.readSpend(), hub.totalSpent()),
         clearChannel: (name) => {
           const channel = hub.getChannel(name);
           if (!channel) throw new Error(hub.unknownTarget(name));
@@ -654,6 +691,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       for (const m of messages) {
         lookup.set(m.id, m);
         lookup.set(shortId(m.id), m);
+        if (m.from === "user" && m.kind === "chat") hub.markSpend(m.id);
         print(formatMessage(m, lookup, channels));
         gui?.broadcast("message", m);
       }
@@ -715,6 +753,26 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     await endAgent(handle);
     hub.ackDelivered(name); // stopped on purpose: its work in progress is not to be resumed
     reassignRouters();
+  }
+
+  function worktreeOf(name: string): Worktree {
+    const worktree = hub.readAgents()[name]?.worktree;
+    if (!worktree) throw new Error(`"${name}" does not work in a worktree`);
+    return worktree;
+  }
+
+  /** Merge an agent's work. A conflict goes back to the agent, since it knows the change best. */
+  function mergeAgent(name: string): { merged: boolean; conflicts: string[] } {
+    const worktree = worktreeOf(name);
+    if (hub.readAgents()[name].status === "busy") throw new Error(`"${name}" is still working: merge when it has finished`);
+    const result = mergeWorktree(worktree, `Work by ${name}`);
+    if (result.conflicts.length > 0) {
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `${worktree.branch} conflicts with ${worktree.base} in ${result.conflicts.join(", ")}, so it was not merged. "${name}" has been asked to resolve it.` });
+      hub.appendMessage({ from: "system", to: name, kind: "chat", text: `Merging your branch ${worktree.branch} into ${worktree.base} conflicts in: ${result.conflicts.join(", ")}. Merge ${worktree.base} into your branch, resolve the conflicts, commit, and post in #group when it is done.` });
+    } else if (result.merged) {
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `${worktree.branch} was merged into ${worktree.base}` });
+    }
+    return result;
   }
 
   /** Forget an agent for good: stopped, out of the registry, the channels and the config. */
@@ -812,6 +870,16 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         const q = [...questions.values()].find((other) => other.agent === m[1]);
         if (!q) throw new Error(`"${m[1]}" is not waiting for an answer`);
         answerQuestion(q.id, parseAnswer(q, m[2]));
+        return;
+      }
+      case "diff": {
+        const { files, branch, base } = worktreeChanges(worktreeOf(cmdArgs));
+        print(files.length ? `  ${branch} changes, against ${base}:\n${files.map((f) => `    ${f}`).join("\n")}` : `  ${branch} has no changes`);
+        return;
+      }
+      case "merge": {
+        const { merged, conflicts } = mergeAgent(cmdArgs);
+        print(conflicts.length ? "  not merged: see #group" : merged ? "  merged" : "  nothing to merge");
         return;
       }
       case "budget":

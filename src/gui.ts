@@ -76,6 +76,10 @@ export interface FleetControls {
   writeConfig(config: unknown): void;
   search(query: string): FleetMessage[];
   clearChannel(name: string): void;
+  diff(agent: string): unknown;
+  merge(agent: string): unknown;
+  tasks(): Promise<unknown>;
+  timeline(): unknown;
 }
 
 export interface GuiServerOptions {
@@ -436,6 +440,10 @@ export class GuiServer {
     if (req.method === "POST" && url === "/config") return this.control(req, res, (b, c) => c.writeConfig(b));
     if (req.method === "GET" && url === "/search") return this.control(req, res, (_b, c) => c.search(parsed.searchParams.get("q") ?? ""));
     if (req.method === "POST" && url === "/channels/clear") return this.control(req, res, (b, c) => c.clearChannel(String(b.name)));
+    if (req.method === "GET" && url === "/diff") return this.control(req, res, (_b, c) => c.diff(parsed.searchParams.get("agent") ?? ""));
+    if (req.method === "POST" && url === "/merge") return this.control(req, res, (b, c) => c.merge(String(b.name)));
+    if (req.method === "GET" && url === "/tasks") return this.control(req, res, (_b, c) => c.tasks());
+    if (req.method === "GET" && url === "/timeline") return this.control(req, res, (_b, c) => c.timeline());
     if (req.method === "POST" && url === "/resume") {
       res.setHeader("Content-Type", "application/json");
       if (!this.opts.resumeHeld) {

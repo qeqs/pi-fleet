@@ -4,6 +4,7 @@
  */
 import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS } from "./hub.ts";
 import { isBudget, isLimit } from "./config.ts";
+import { isTaskBoard, type TaskBoardKind } from "./taskboard.ts";
 
 /** Runaway limits, handed to each agent at spawn. */
 export interface Limits {
@@ -41,8 +42,8 @@ function valueArg(flag: string, value: string | undefined): string {
   return value;
 }
 
-export function parseArgs(argv: string[]): { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; maxCost?: number; approve?: string[]; fresh?: boolean; noRestart?: boolean; routerModel?: string; rest: string[] } {
-  const out: { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; maxCost?: number; approve?: string[]; fresh?: boolean; noRestart?: boolean; routerModel?: string; rest: string[] } = { agents: [], rest: [] };
+export function parseArgs(argv: string[]): { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; maxCost?: number; approve?: string[]; fresh?: boolean; noRestart?: boolean; routerModel?: string; worktrees?: boolean; taskboard?: TaskBoardKind; rest: string[] } {
+  const out: { dir?: string; agents: string[]; model?: string; lean?: boolean; detach?: boolean; gui?: boolean; port?: number; host?: string; open?: boolean; template?: string; maxTurns?: number; maxHops?: number; maxCost?: number; approve?: string[]; fresh?: boolean; noRestart?: boolean; routerModel?: string; worktrees?: boolean; taskboard?: TaskBoardKind; rest: string[] } = { agents: [], rest: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dir") out.dir = valueArg(a, argv[++i]);
@@ -61,6 +62,12 @@ export function parseArgs(argv: string[]): { dir?: string; agents: string[]; mod
     else if (a === "--max-turns") out.maxTurns = limitArg(a, argv[++i]);
     else if (a === "--max-hops") out.maxHops = limitArg(a, argv[++i]);
     else if (a === "--router-model") out.routerModel = valueArg(a, argv[++i]);
+    else if (a === "--worktrees") out.worktrees = true;
+    else if (a === "--taskboard") {
+      const board = valueArg(a, argv[++i]);
+      if (!isTaskBoard(board)) throw new UsageError(`--taskboard needs openspec or beads, got "${board}"`);
+      out.taskboard = board;
+    }
     else if (a === "--max-cost") out.maxCost = budgetArg(a, argv[++i]);
     else if (a === "--approve") out.approve = valueArg(a, argv[++i]).split(",").map((t) => t.trim()).filter(Boolean);
     else if (a.startsWith("-")) throw new UsageError(`unknown option "${a}"`);
@@ -94,6 +101,8 @@ Usage:
   --gui: open a web UI (group chat + per-agent live RPC-event activity); --open launches the browser.
          Open the link printed at startup: it carries the access token (kept in <dir>/gui-token).
   --host H: GUI bind address (default 127.0.0.1; use 0.0.0.0 for LAN access). serve runs the web UI headless.
+  --worktrees: give implementers, and agents with no role, their own git worktree and branch.
+  --taskboard T: the agents' task board, openspec (default) or beads.
   --router-model M: model for routing channel messages; a cheap one is enough (default: --model).
   --fresh: start agents with new sessions instead of resuming their conversations.
   --no-restart: leave crashed agents stopped instead of restarting them (up to 3 times in 10 minutes).
@@ -116,4 +125,6 @@ Group chat input:
   /resume         lift a pause and deliver the messages it held back
   /answer name x  answer an agent's question
   /budget N       change the spending limit, in dollars
+  /diff name      what an agent has changed in its worktree
+  /merge name     merge an agent's worktree into its base branch
   /quit           stop all and exit`;

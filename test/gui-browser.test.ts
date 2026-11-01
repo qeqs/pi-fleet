@@ -4,7 +4,7 @@
  * snaps shut. Uses whatever Chrome or Edge the machine has, so nothing is downloaded.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
@@ -241,6 +241,52 @@ describe("staying in place", () => {
     await page.click('[data-chat="group"]');
     expect(await page.locator(".unread").count()).toBe(0);
     expect(await page.title()).toBe("pi-fleet");
+  });
+});
+
+describe("reviewing an agent's work", () => {
+  it("shows what it changed and merges it, with no git", async () => {
+    const repo = path.join(model.tmp, "gui-repo");
+    fs.mkdirSync(repo, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+    git("init", "-b", "main");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.com");
+    fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+    git("add", "-A");
+    git("commit", "-m", "First");
+
+    const { page } = await open("changes", ["--agent", `alice:${repo}:${MODEL}:implementer`, "--agent", `reviewer:${repo}:${MODEL}:reviewer`, "--worktrees"]);
+    await ready(page, "alice", "reviewer");
+    await page.click('[data-chat="alice"]');
+    await send(page, "[[write added.txt from alice]]");
+    await page.locator("#conversation").getByText("ok (alice)").waitFor({ timeout: 30000 });
+
+    await page.click('button[data-act="changes"]');
+    await page.locator(".diff .add").getByText("+from alice").waitFor();
+    await page.click("#mergeBtn");
+    await page.locator("#mergeStatus").getByText("Merged.").waitFor();
+    expect(fs.readFileSync(path.join(repo, "added.txt"), "utf8")).toBe("from alice");
+  }, 60000);
+
+  it("has no Changes button for an agent with no worktree", async () => {
+    const { page } = await open("no-changes", agentsFor("alice"));
+    await ready(page, "alice");
+    await page.click('[data-chat="alice"]');
+    await page.waitForSelector('button[data-act="restart"]');
+    expect(await page.locator('button[data-act="changes"]').count()).toBe(0);
+  });
+
+  it("shows the timeline and the task board", async () => {
+    const { page, hub } = await open("timeline", agentsFor("alice"));
+    await ready(page, "alice");
+    hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "a request to trace" });
+    await page.locator("#conversation").getByText("a request to trace").waitFor();
+    await page.click("#settingsBtn");
+    await page.click('#tabs button[data-tab="timeline"]');
+    await page.locator("#mbody").getByText("a request to trace", { exact: true }).waitFor();
+    await page.click('#tabs button[data-tab="tasks"]');
+    await page.locator("#mbody").getByText("No tasks on the board yet.").waitFor();
   });
 });
 

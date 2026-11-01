@@ -99,7 +99,16 @@ Your role: SUPERVISOR (router + summarizer for your channels).
   }
 }
 
+/** For an agent in its own worktree: how its work reaches everyone else. */
+export function worktreePrompt(branch: string | undefined): string {
+  if (!branch) return "";
+  return `
+
+You work in your own git worktree on branch ${branch}. Stay in your working directory and commit your work there. Do not merge: a person does that after review. When you ask for a review, give the full path of your working directory, because other agents are not in it.`;
+}
+
 export function fleetPrompt(name: string, lean: boolean, roster: string, role?: string): string {
+  const closing = rolePrompt(role) + worktreePrompt(process.env.PI_FLEET_BRANCH);
   if (lean) {
     // Compact for small models: same rules, fewer words.
     return `You are "${name}", an agent in a multi-agent fleet with a shared message bus.
@@ -110,7 +119,7 @@ Fleet (you are "${name}"): ${roster}
 - To reply to a specific message, pass its id (in parentheses) as replyTo.
 - ${TASKBOARD_PLAN}
 - ${TASKBOARD_GATE}
-- Review: when asked to review work, reply "APPROVE" or "REQUEST CHANGES: <reasons>".` + rolePrompt(role);
+- Review: when asked to review work, reply "APPROVE" or "REQUEST CHANGES: <reasons>".` + closing;
   }
   return `You are "${name}", one agent in a multi-agent fleet. Other agents and the user talk to you through a shared message bus with named channels.
 
@@ -127,7 +136,7 @@ Fleet rules:
 - **${TASKBOARD_GATE}**
 - **Review protocol**: when another agent asks you to review their work, reply with either \`APPROVE\` or \`REQUEST CHANGES: <specific, actionable reasons>\`. Be concrete about what must change.
 - Coordinate: when you finish work another agent depends on, or need a decision, send them a message instead of guessing.
-- Use fleet_agents to see who is available and what they are doing.` + rolePrompt(role);
+- Use fleet_agents to see who is available and what they are doing.` + closing;
 }
 
 export function buildLookup(hub: Hub): Map<string, FleetMessage> {

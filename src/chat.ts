@@ -24,6 +24,8 @@ const COMMANDS: Record<string, string | undefined> = {
   restart: "/restart name",
   answer: "/answer name text",
   budget: "/budget dollars",
+  diff: "/diff name",
+  merge: "/merge name",
 };
 
 export const CHAT_HELP = `  # text          post to the group
@@ -40,6 +42,8 @@ export const CHAT_HELP = `  # text          post to the group
   /resume         lift a pause and deliver the messages it held back
   /answer name x  answer an agent's question
   /budget N       change the spending limit, in dollars
+  /diff name      what an agent has changed in its worktree
+  /merge name     merge an agent's worktree into its base branch
   /quit           stop all and exit
   /help           this list`;
 

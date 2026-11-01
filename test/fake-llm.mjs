@@ -3,6 +3,9 @@
 //   "Routing task for #x"  -> calls route(); targets from `route=a,b` in the text,
 //                             else the SDLC default (user -> planner, otherwise nobody)
 //   [[slow N]]             -> streams for N seconds, keeping the agent busy
+//   router calls          -> answers with JSON; targets from `route=a,b` in the text, else
+//                             the planner if there is one, or nobody for agents' messages
+//   [[router-garbage]]     -> as the router, answers with no JSON
 //   [[ask]]                -> calls ask_human (from test/ask-extension.ts)
 //   [[guarded]]            -> calls fleet_agents, for testing approvals
 //   [[hang]]               -> never answers
@@ -25,8 +28,18 @@ const textOf = (m) =>
       : "";
 
 function agentOf(messages) {
-  const sys = messages.find((m) => m.role === "system" || m.role === "developer");
-  return /You are "([^"]+)"/.exec(textOf(sys))?.[1] ?? "?";
+  const sys = textOf(messages.find((m) => m.role === "system" || m.role === "developer"));
+  if (sys.startsWith("You route messages")) return "router";
+  return /You are "([^"]+)"/.exec(sys)?.[1] ?? "?";
+}
+
+function routerReply(text) {
+  if (text.includes("[[router-garbage]]")) return "I am not sure who should do this.";
+  const from = /New message from (\S+):/.exec(text)?.[1];
+  const members = [...(/Members: (.*)/.exec(text)?.[1] ?? "").matchAll(/([\w-]+) \(/g)].map((m) => m[1]);
+  const explicit = /route=([\w,-]+)/.exec(text)?.[1]?.split(",");
+  const respond = explicit ?? (from === "user" ? [members.includes("planner") ? "planner" : members[0]] : []);
+  return JSON.stringify({ respond, summary: `latest from ${from}` });
 }
 
 const say = (text) => ({ kind: "text", text });
@@ -34,6 +47,7 @@ const tool = (name, args) => ({ kind: "tool", name, args });
 
 function decide(agent, messages) {
   const last = messages.at(-1);
+  if (agent === "router") return say(routerReply(textOf(last)));
   const lastUser = textOf([...messages].reverse().find((m) => m.role === "user"));
   if (lastUser.includes("[[runon]]")) return tool("fleet_agents", {});
   if (lastUser.includes("[[repeat]]")) return tool("fleet_send", { to: "group", text: "Already done." });

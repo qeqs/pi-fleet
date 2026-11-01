@@ -40,7 +40,7 @@ export function parseAgentSpec(spec: string): ParsedAgentSpec {
 }
 
 /** Names the bus keeps for itself: an agent may not pose as the user or shadow the default channel. */
-const RESERVED_NAMES = new Set(["group", "user", "system"]);
+const RESERVED_NAMES = new Set(["group", "user", "system", "router"]);
 
 /**
  * Agent names end up in file paths, pipe names and @mentions, so they are limited

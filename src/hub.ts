@@ -92,17 +92,21 @@ export interface InboxEntry {
   delivered: boolean;
 }
 
+/** How long a channel's rolling summary may grow. */
+const SUMMARY_LEN = 500;
+
 /**
- * A named group chat (channel). Members are agent names; the supervisor is the
- * member that routes each message to the relevant members and maintains the
- * rolling summary. If supervisor is unset, the first member is used.
+ * A named group chat (channel). Messages are routed to the members who should act,
+ * and a rolling summary is kept. By default the dedicated router does that; naming
+ * a supervisor gives the job to that agent instead. In detached mode, with no
+ * supervisor process to run the router, the first member does it.
  */
 export interface ChannelConfig {
   name: string;
   members: string[];
-  /** agent name that routes + summarizes for this channel (default: first member) */
+  /** agent that routes + summarizes for this channel, instead of the dedicated router */
   supervisor?: string;
-  /** optional model override for the supervisor (e.g. a cheap router model) */
+  /** model for the dedicated router on this channel (a cheap one is usually enough) */
   supervisorModel?: string;
   /** rolling summary of the channel, maintained by the supervisor */
   summary?: string;
@@ -468,6 +472,10 @@ export class Hub {
     if (entries.some((e) => e.delivered)) this.writeInbox(name, entries.filter((e) => !e.delivered));
   }
 
+  removeFromInbox(name: string, id: string): void {
+    this.writeInbox(name, this.readInbox(name).filter((e) => e.id !== id));
+  }
+
   clearInbox(name: string): void {
     if (this.readInbox(name).length > 0) this.writeInbox(name, []);
   }
@@ -614,10 +622,22 @@ export class Hub {
     });
   }
 
+  /** Fold a message the router never saw into the summary, so the summary stays current. */
+  noteInSummary(name: string, note: string): void {
+    this.withLock(() => {
+      const channels = this.readChannels();
+      const c = channels.find((x) => x.name === name);
+      if (!c) return;
+      c.summary = `${c.summary ? `${c.summary}\n` : ""}${note.replace(/\s+/g, " ").slice(0, 120)}`.slice(-SUMMARY_LEN);
+      this.writeChannels(channels);
+    });
+  }
+
   /**
-   * Give every channel whose router is not running a running member, preferring
-   * an agent with the supervisor role. A channel with nobody running keeps its
-   * router, since it can do nothing until someone comes back. Returns the changes.
+   * Give every channel routed by an agent that is not running a running member,
+   * preferring an agent with the supervisor role. A channel with nobody running
+   * keeps its router, since it can do nothing until someone comes back. Channels
+   * on the dedicated router need nothing. Returns the changes.
    */
   reassignSupervisors(running: string[]): { channel: string; supervisor: string }[] {
     return this.withLock(() => {
@@ -625,8 +645,7 @@ export class Hub {
       const agents = this.readAgents();
       const changed: { channel: string; supervisor: string }[] = [];
       for (const c of channels) {
-        const current = c.supervisor ?? c.members[0];
-        if (current === undefined || running.includes(current)) continue;
+        if (!c.supervisor || running.includes(c.supervisor)) continue;
         const candidates = c.members.filter((m) => running.includes(m));
         const next = candidates.find((m) => agents[m]?.role === "supervisor") ?? candidates[0];
         if (!next) continue;
@@ -640,18 +659,18 @@ export class Hub {
 
   /**
    * Ensure the default "group" channel exists with all current agents as members.
-   * The supervisor is the agent with role "supervisor" if present, else the first
-   * agent. Called by the supervisor process on startup and when agents join.
+   * An agent with role "supervisor" routes it; with none, the dedicated router does.
+   * Called by the supervisor process on startup and when agents join.
    */
   ensureDefaultChannel(): ChannelConfig {
-    const agents = Object.keys(this.readAgents()).sort();
+    const agents = this.readAgents();
+    const names = Object.keys(agents).sort();
     const existing = this.getChannel(DEFAULT_CHANNEL);
-    const supervisor =
-      agents.find((n) => this.readAgents()[n]?.role === "supervisor") ?? agents[0];
+    const roleSupervisor = names.find((n) => agents[n]?.role === "supervisor");
     const channel: ChannelConfig = {
       name: DEFAULT_CHANNEL,
-      members: agents.length ? agents : existing?.members ?? [],
-      supervisor: existing?.supervisor ?? (supervisor ?? undefined),
+      members: names.length ? names : existing?.members ?? [],
+      supervisor: roleSupervisor ? (existing?.supervisor ?? roleSupervisor) : undefined,
       summary: existing?.summary,
     };
     this.upsertChannel(channel);

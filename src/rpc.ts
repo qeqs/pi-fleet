@@ -146,6 +146,10 @@ export class PiRpc {
     return this.send({ type: "set_session_name", name });
   }
 
+  sendCommand(cmd: Record_): Promise<Record_> {
+    return this.send(cmd);
+  }
+
   /** Orderly shutdown: close stdin, then kill the process tree if needed. */
   async close(): Promise<void> {
     if (this.exited) return;

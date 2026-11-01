@@ -86,10 +86,10 @@ Linux and macOS have never been run, and the riskiest logic cannot be unit-teste
 Today the router is an ordinary worker: its context grows with every message, and channel
 messages wait while it works.
 
-- [ ] Rules first: messages that need no judgement, such as `APPROVE`, are routed without a model call
-- [ ] A dedicated stateless router: a short model call per message, on the cheap `supervisorModel`, independent of any worker
-- [ ] Channel summaries stay current when `@mentions` bypass the router
-- [ ] `sdlc` and `pair` use the new router by default
+- [x] Rules first: messages that need no judgement, such as `APPROVE`, are routed without a model call
+- [x] A dedicated stateless router: a short model call per message, on the cheap `supervisorModel`, independent of any worker
+- [x] Channel summaries stay current when `@mentions` bypass the router
+- [x] `sdlc` and `pair` use the new router by default
 
 **Done when:** on a real model the sdlc chain runs with no routing turns in a worker's session, using fewer tokens than the current baseline (22.5k for the hello.txt task).
 

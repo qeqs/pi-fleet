@@ -21,6 +21,9 @@ Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
   in the roadmap. (Pull requests need `gh` or a token, which this environment does not have.)
 
 ## Progress log
+- 2026-11-01: Milestone 4 done (0.5.0). Real-model sdlc chain on hf-space-qwen38: 65s, no
+  routing turn in any worker, router 262 tokens, implementer 10,118 (baseline 22,546 when it
+  also routed), whole fleet 20,733. Rules settled `APPROVE` with no model call.
 - 2026-11-01: Milestone 3 done (0.4.0). Demonstrated in `test/e2e.test.ts`: an agent's question
   reaches the GUI and is answered through it (`lets a person answer`), and a fleet pauses at a
   budget computed by pi from token usage (`shows real token counts`). Added approvals on pi's

@@ -45,25 +45,28 @@ fleet> # refactor the parser and add tests
   supervisor **heartbeat** tells each agent's poller to stay dormant while attached (no
   double-wake); when the supervisor exits/detaches the heartbeat goes stale and the poller
   resumes self-waking, so detached mode still works.
-- **Channels & supervisor routing** (see `wakeDecision` / `route`): a **channel** is a named
-  group chat with a member list and a **supervisor** (stored in `channels.json`). A channel
-  message that @mentions members goes straight to them (no routing turn; the summary is not
-  updated). Otherwise only the supervisor wakes (in `route` mode); it calls `route`, once per
-  message, to pick the members who should act and to update the channel's rolling summary. An
-  agent cannot address itself: `fleet_send` and `fleet_mention` refuse that, because it would
-  wake nobody, and tell the model to do the work in its current turn. `route` DMs each chosen
-  member a message carrying the original request **plus the summary** (context without the full
-  transcript) and persists the summary. A member's reply re-wakes the supervisor, which routes
-  again (usually to nobody, ending the turn). This replaces the old N-way broadcast: one cheap
-  routing call per message + only the relevant members. The default `#group` channel is
-  auto-created on startup (all agents as members, an agent with role `supervisor` — else the
-  first agent — as the router). Channels are managed in the GUI (Settings → Channels), the CLI
-  (`/channel add|rm|list`), or by posting `#name message` to the bus.
+- **Channels & routing** (see `wakeDecision`, `src/router.ts`): a **channel** is a named group
+  chat with a member list (stored in `channels.json`). A message that @mentions members goes
+  straight to them. Any other message goes to the **router**, which is not an agent: rules settle
+  what needs no judgement (`APPROVE` ends the turn, `REQUEST CHANGES` goes to the implementers),
+  and the rest get one short model call from a bare pi process that starts from nothing each
+  time, so routing neither grows a worker's context nor waits for one. It DMs each chosen member
+  the request plus a rolling summary (context without the full transcript), and each decision
+  shows in the channel. Set a cheap model with `--router-model`, `routerModel` in `fleet.json`, or
+  `supervisorModel` on a channel; it defaults to `--model`. If the router fails, the message goes
+  to the planner or the first running member, with a notice. To have an agent route instead, give
+  it the `supervisor` role (for `#group`) or name it as a channel's supervisor; it then uses the
+  `route` tool, once per message. An agent cannot address itself: `fleet_send` and `fleet_mention`
+  refuse that, because it would wake nobody, and tell the model to do the work in its current
+  turn. In detached mode there is no supervisor process to run the router, so a channel's first
+  member routes. The default `#group` channel is auto-created on startup with all agents as
+  members. Channels are managed in the GUI (Settings → Channels), the CLI (`/channel add|rm|list`),
+  or by posting `#name message` to the bus.
 - **Waking semantics** (see `wakeDecision`):
   - a **DM** (`to=<agent>`) wakes that agent;
   - a channel message **@mentioning** members wakes only those members — mentions always
     win, so `fleet_mention` can hand work to a specific agent, even from the supervisor;
-  - any other channel message wakes the supervisor (or, with no supervisor, all members);
+  - any other channel message goes to the router, or to the channel's supervisor agent;
   - without a channel config, `group` falls back to the legacy rules: a **reply**
     (`replyTo`, no mention) wakes only the thread's participants, and a message with **no
     mention and no reply** is a broadcast (wakes everyone).
@@ -370,6 +373,7 @@ src/chat.ts            the terminal chat's input language
 src/doctor.ts          fleet doctor: checks a setup
 src/restart.ts         when to bring a crashed agent back
 src/questions.ts       questions from agents to the human
+src/router.ts          the dedicated channel router: rules, then one short model call
 src/rpc.ts             pi RPC client (JSONL) — direct child + named-pipe bridge client
 src/bridge.ts          detached bridge process owning a pi child over named pipes
 src/hub.ts             file-based message bus + agent registry (+ rotation, stats, heartbeat)

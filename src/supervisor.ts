@@ -6,6 +6,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { Hub, isPidAlive, formatMessage, shortId, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type ChannelConfig, type FleetMessage } from "./hub.ts";
 import { PiRpcBridge, bridgeListening } from "./rpc.ts";
 import { agentNameFromSpec, agentCwdFromSpec, agentModelFromSpec, agentRoleFromSpec, isValidAgentName } from "./spec.ts";
@@ -18,7 +19,11 @@ import { computeWakes } from "./wakes.ts";
 import { killProcessTree, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
 import { RestartPolicy } from "./restart.ts";
 import { describeQuestion, parseAnswer, questionFrom, type Answer, type Question } from "./questions.ts";
+import { fallbackRoute, ModelRouter, parseRouterReply, routeByRules, routerPrompt, type RouteDecision } from "./router.ts";
+import { applyRoute } from "./extension/index.ts";
 import { UsageError, budgetArg, type FleetArgs, type Limits } from "./cli.ts";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /** A wake pi refuses (e.g. mid-compaction) is retried for about a minute before it is left for later. */
 const WAKE_RETRIES = 12;
@@ -26,6 +31,9 @@ const WAKE_RETRY_MS = 5000;
 
 /** Put in front of a wake the agent had accepted but not finished when it went down. */
 const INTERRUPTED_NOTE = "You were restarted before you finished the work below. Check what is already done, then carry on.";
+
+/** The dedicated router's name on the bus, and its inbox of messages to route. */
+const ROUTER = "router";
 
 function printBanner() {
   console.log("");
@@ -163,9 +171,67 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     if (!data) return;
     hub.saveStats(name, data);
     gui?.broadcast("stats", { name, stats: data });
+    checkBudget();
+  }
+
+  function checkBudget(): void {
     if (limits.maxCost === undefined || hub.pausedReason() !== null) return;
     const spent = Object.values(hub.readStats()).reduce((sum, s) => sum + Number(s.cost ?? 0), 0);
     if (spent >= limits.maxCost) void stopAllRuns(`spending limit reached: $${spent.toFixed(2)} of $${limits.maxCost} (raise it with /budget)`);
+  }
+
+  // the dedicated router: one bare pi per model, started on first use
+  const routers = new Map<string, ModelRouter>();
+  function routerFor(channel: ChannelConfig): ModelRouter {
+    const info = hub.readAgents();
+    const model = channel.supervisorModel ?? args.routerModel ?? fleetCfg?.routerModel ?? args.model ?? channel.members.map((m) => info[m]?.model).find(Boolean);
+    let router = routers.get(model ?? "");
+    if (!router) {
+      router = new ModelRouter(ROOT, hub.dir, hub.logFileFor(ROUTER), model);
+      routers.set(model ?? "", router);
+    }
+    return router;
+  }
+
+  /** Decide who acts on a channel message: a rule if one fits, else one short model call. */
+  async function decideRoute(m: FleetMessage, channel: ChannelConfig): Promise<RouteDecision> {
+    const known = Object.values(hub.readAgents());
+    const byRule = routeByRules(m, channel, known);
+    if (byRule) return { respond: byRule };
+    const reply = await routerFor(channel).ask(routerPrompt(channel, m, known, hub.tailMessages(40))).catch(() => "");
+    const spent = [...routers.values()].reduce((sum, r) => ({ tokens: sum.tokens + r.spent.tokens, cost: sum.cost + r.spent.cost }), { tokens: 0, cost: 0 });
+    const stats = { tokens: { total: spent.tokens }, cost: spent.cost };
+    hub.saveStats(ROUTER, stats);
+    gui?.broadcast("stats", { name: ROUTER, stats });
+    checkBudget();
+    const decision = parseRouterReply(reply, channel);
+    if (decision) return decision;
+    const respond = fallbackRoute(channel, known, [...agents.keys()]);
+    hub.appendMessage({ from: "system", to: "group", kind: "system", text: `the router gave no usable answer, so a message in #${channel.name} went to ${respond.join(", ") || "nobody"}` });
+    return { respond };
+  }
+
+  /** Work through the messages waiting for the router. They stay on disk until they are routed. */
+  async function pumpRouter(): Promise<void> {
+    for (const entry of hub.readInbox(ROUTER)) {
+      if (hub.pausedReason() !== null) return;
+      const m = JSON.parse(entry.text) as FleetMessage;
+      const channel = hub.getChannel(m.to);
+      if (channel) {
+        const decision = await decideRoute(m, channel);
+        if (hub.pausedReason() !== null) return; // the budget, or Stop all, came first
+        const respond = decision.respond.filter((name) => name !== m.from);
+        applyRoute(hub, ROUTER, channel, m, respond, decision.summary ?? "");
+      }
+      hub.removeFromInbox(ROUTER, entry.id);
+    }
+  }
+
+  let routing: Promise<void> = Promise.resolve();
+  function scheduleRouting(): void {
+    routing = routing.then(pumpRouter).catch((err: Error) => {
+      hub.appendMessage({ from: "system", to: "group", kind: "system", text: `routing failed: ${err.message}` });
+    });
   }
 
   function wire(handle: AgentHandle, name: string) {
@@ -322,6 +388,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     await Promise.allSettled(
       running.map(async (a) => {
         hub.clearInbox(a.name);
+        hub.clearInbox(ROUTER);
         // in this order: pi carries on with whatever is still queued after an abort
         await a.rpc.sendCommand({ type: "clear_queue" });
         await a.rpc.sendCommand({ type: "abort" });
@@ -337,6 +404,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     const reason = hub.pausedReason();
     const held = reason === null ? 0 : hub.heldMessages().length;
     if (reason !== shownPaused || held !== shownHeld) gui?.broadcast("paused", { reason, held });
+    if (reason === null && shownPaused !== null) scheduleRouting(); // what the router left when the pause began
     shownPaused = reason;
     shownHeld = held;
   }
@@ -349,9 +417,10 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     hub.appendMessage({ from: "user", to: "group", kind: "activity", text: "resumed" });
     hub.resume();
     syncPaused();
-    const woken = [...computeWakes(held, hub, lookup, 0)];
+    const woken = [...computeWakes(held, hub, lookup, 0, (m) => hub.enqueueWake(ROUTER, JSON.stringify(m)))];
     for (const [name, text] of woken) hub.enqueueWake(name, text);
     for (const [name] of woken) schedulePump(name);
+    scheduleRouting();
     return held.length;
   }
 
@@ -372,7 +441,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       reassignRouters();
       const c = hub.getChannel("group");
       gui?.broadcast("channels", hub.readChannels());
-      print(`  # channel "group" (supervisor: ${c?.supervisor ?? "(none)"}, members: ${c?.members.join(", ") || "(none)"})`);
+      print(`  # channel "group" (routed by ${c?.supervisor ?? "the router"}, members: ${c?.members.join(", ") || "(none)"})`);
     } catch {
       // ignore
     }
@@ -571,12 +640,19 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         print(formatMessage(m, lookup, channels));
         gui?.broadcast("message", m);
       }
-      const woken = [...computeWakes(messages, hub, lookup, limits.maxHops)];
+      let toRoute = 0;
+      const woken = [
+        ...computeWakes(messages, hub, lookup, limits.maxHops, (m) => {
+          hub.enqueueWake(ROUTER, JSON.stringify(m));
+          toRoute++;
+        }),
+      ];
       for (const [name, text] of woken) hub.enqueueWake(name, text);
       // only now is the position safe to save: a crash above replays these messages
       cursor = next;
       if (messages.length > 0) hub.writeCursor(cursor);
       for (const [name] of woken) schedulePump(name);
+      if (toRoute > 0) scheduleRouting();
       if (hub.rotateIfLarge(ROTATE_BYTES)) lookup.clear();
       syncPaused();
     } catch {
@@ -586,6 +662,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
 
   // whatever waited in the inboxes while the fleet was down
   for (const name of agents.keys()) schedulePump(name, spawnedHere.has(name));
+  scheduleRouting();
 
   printBanner();
   if (!headless) {
@@ -713,7 +790,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         const parts = cmdArgs.split(/\s+/).filter(Boolean);
         if (parts.length === 0) {
           const channels = hub.readChannels();
-          print(channels.length ? channels.map((c) => `  #${c.name}  supervisor=${c.supervisor ?? "(first)"}  members=${c.members.join(", ") || "(none)"}${c.summary ? "  [summary]" : ""}`).join("\n") : "  (no channels)");
+          print(channels.length ? channels.map((c) => `  #${c.name}  routed by ${c.supervisor ?? "the router"}  members=${c.members.join(", ") || "(none)"}${c.summary ? "  [summary]" : ""}`).join("\n") : "  (no channels)");
         } else if (parts[0] === "add") {
           const channel = parts[1];
           const members = (parts[2] ?? "").split(",").map((m) => m.trim()).filter(Boolean);
@@ -722,7 +799,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
             print("  usage: /channel add <name> <m1,m2,...> [supervisor]");
           } else {
             saveChannel({ name: channel, members, supervisor });
-            print(`  created #${channel} (members: ${members.join(", ")}, supervisor: ${supervisor ?? members[0]})`);
+            print(`  created #${channel} (members: ${members.join(", ")}, routed by ${supervisor ?? "the router"})`);
           }
         } else if (parts[0] === "rm") {
           const channel = parts[1];
@@ -765,6 +842,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     clearInterval(tailer);
     clearInterval(heartbeat);
     hub.clearSupervisorHeartbeat(); // tell agents the supervisor is gone (they self-wake now)
+    for (const router of routers.values()) router.close();
     gui?.close();
     rl?.close();
     if (args.detach) {

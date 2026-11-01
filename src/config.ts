@@ -12,6 +12,7 @@
  *     "maxTurns": 100,                         // optional, turns per run (0 = no limit)
  *     "maxHops": 40,                           // optional, agent messages per human message (0 = no limit)
  *     "maxCost": 5,                            // optional, pause the fleet at this spend in dollars
+ *     "routerModel": "provider/cheap-model",   // optional, model for routing channel messages
  *     "agents": [
  *       { "name": "planner", "cwd": ".", "role": "planner" },
  *       { "name": "worker",  "cwd": ".", "model": "other/model", "role": "implementer" }
@@ -41,6 +42,8 @@ export interface FleetConfig {
   maxHops?: number;
   /** Pause the fleet at this spend, in dollars. */
   maxCost?: number;
+  /** Model for routing channel messages; a cheap one is enough. */
+  routerModel?: string;
   agents: FleetAgentConfig[];
 }
 
@@ -82,6 +85,7 @@ export function loadFleetConfig(hubDir: string): FleetConfig | null {
     maxTurns: raw.maxTurns,
     maxHops: raw.maxHops,
     maxCost: raw.maxCost,
+    routerModel: raw.routerModel,
     agents: (raw.agents ?? []).map((a) => ({
       ...a,
       extensions: Array.isArray(a.extensions) ? a.extensions.filter((e): e is string => typeof e === "string") : undefined,

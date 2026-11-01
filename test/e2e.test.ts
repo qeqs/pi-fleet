@@ -197,8 +197,10 @@ describe("fleet end to end", () => {
     expect(res.status).toBe(200);
 
     await until("the reviewer's verdict", () => hub.tailMessages(50).find((m) => m.from === "reviewer" && m.text === "APPROVE"));
-    const woken = new Set((await llmLog()).map((r) => r.agent));
-    expect(woken).toEqual(new Set(["planner", "implementer", "reviewer"]));
+    const log = await llmLog();
+    expect(new Set(log.map((r) => r.agent))).toEqual(new Set(["router", "planner", "implementer", "reviewer"]));
+    expect(log.filter((r) => r.agent !== "router" && r.last.includes("Routing task"))).toEqual([]); // no worker routes
+    expect(log.filter((r) => r.agent === "router")).toHaveLength(1); // APPROVE needed no model
     await until("the fleet to settle", async () => {
       const agents = Object.values(hub.readAgents());
       return agents.every((a) => a.status === "idle");
@@ -242,7 +244,7 @@ describe("fleet end to end", () => {
   }, 60000);
 
   it("marks a crashed agent stopped, says so, and hands its channel to another router", async () => {
-    const { hub } = startFleet("crash", ["serve", "--agent", "alice", "--agent", "bob", "--no-restart"]);
+    const { hub } = startFleet("crash", ["serve", "--agent", "alice:::supervisor", "--agent", "bob", "--no-restart"]);
     await idle(hub, ["alice", "bob"]);
     expect(hub.getChannel("group")?.supervisor).toBe("alice");
     killTree(hub.readAgents().alice.pid);
@@ -389,6 +391,40 @@ describe("fleet end to end", () => {
     expect(hub.readAgents().alice.status).toBe("busy");
   }, 60000);
 
+  it("routes a channel message without waking anyone it does not concern", async () => {
+    const { hub } = startFleet("router", ["serve", "--agent", "alice", "--agent", "bob"]);
+    await idle(hub, ["alice", "bob"]);
+    hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "for bob please route=bob" });
+    await until("bob to get it", async () => (await llmLog()).find((r) => r.agent === "bob" && r.last.includes("for bob please")));
+    await idle(hub, ["alice", "bob"]);
+    const log = (await llmLog()).filter((r) => r.conversation.includes("for bob please"));
+    expect(log.some((r) => r.agent === "alice")).toBe(false);
+    expect(hub.tailMessages(20).some((m) => m.kind === "activity" && m.text === "routed to bob")).toBe(true);
+    expect(hub.getChannel("group")?.summary).toContain("latest from user");
+  }, 60000);
+
+  it("still gets a message to someone when the router gives no usable answer", async () => {
+    const { hub } = startFleet("routerfail", ["serve", "--agent", "alice", "--agent", "bob"]);
+    await idle(hub, ["alice", "bob"]);
+    hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "[[router-garbage]] anyone?" });
+    await until("the fallback notice", () => hub.tailMessages(20).find((m) => m.text.includes("the router gave no usable answer")));
+    await until("a member to get it", async () => (await llmLog()).find((r) => r.agent !== "router" && r.conversation.includes("[[router-garbage]]")));
+  }, 60000);
+
+  it("resumes routing after a crash: what waited for the router is not lost", async () => {
+    const hubDir = path.join(tmp, "routercrash");
+    const first = startFleet("routercrash", ["up", "--agent", "alice"]);
+    await idle(first.hub, ["alice"]);
+    const { pid } = first.hub.readAgents().alice;
+    killTree(first.proc.pid);
+    killTree(pid);
+    await until("the supervisor to go", () => !isPidAlive(first.proc.pid ?? 0));
+    first.hub.enqueueWake("router", JSON.stringify({ id: "x", ts: Date.now(), from: "user", to: "group", kind: "chat", text: "left waiting route=alice" }));
+    expect(fs.existsSync(hubDir)).toBe(true);
+    startFleet("routercrash", ["up", "--agent", "alice"]);
+    await until("the waiting message to be routed", async () => (await llmLog()).find((r) => r.agent === "alice" && r.conversation.includes("left waiting")));
+  }, 60000);
+
   it("reports a run that ends in a model error", async () => {
     const { hub } = startFleet("modelerror", ["serve", "--agent", "alice"]);
     await idle(hub, ["alice"]);
@@ -472,7 +508,11 @@ describe("fleet end to end", () => {
     const res = await guiPost(port, token, "/resume", {});
     expect((await res.json()).delivered).toBeGreaterThan(0);
     await until("the chain to continue", async () => (await llmLog()).length > before);
-    await until("the next pause: the hop count restarted", () => hub.pausedReason());
+    await until("the next pause", () => hub.pausedReason());
+    const messages = hub.tailMessages(200);
+    const resumedAt = messages.findIndex((m) => m.kind === "activity" && m.text === "resumed");
+    const after = messages.slice(resumedAt).filter((m) => m.kind === "chat");
+    expect(after.length).toBeGreaterThanOrEqual(3); // the hop count restarted, so the chain got a full run
   }, 60000);
 
   it("pauses a ping-pong at the hop limit, and the human restarts the fleet", async () => {

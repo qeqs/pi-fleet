@@ -155,6 +155,13 @@ describe("inbox", () => {
     expect(hub.readInbox("bob").map((e) => e.text)).toEqual(["not yet"]);
   });
 
+  it("removes one entry by id", () => {
+    const a = hub.enqueueWake("router", "first");
+    hub.enqueueWake("router", "second");
+    hub.removeFromInbox("router", a.id);
+    expect(hub.readInbox("router").map((e) => e.text)).toEqual(["second"]);
+  });
+
   it("keeps each agent's inbox separate", () => {
     hub.enqueueWake("bob", "for bob");
     expect(hub.readInbox("alice")).toEqual([]);
@@ -318,11 +325,11 @@ describe("router failover", () => {
     expect(hub.getChannel("group")?.supervisor).toBe("c");
   });
 
-  it("treats the first member as the router when none is set", () => {
+  it("leaves channels on the dedicated router alone", () => {
     agent("a");
     agent("b");
     hub.upsertChannel({ name: "dev", members: ["a", "b"] });
-    expect(hub.reassignSupervisors(["b"])).toEqual([{ channel: "dev", supervisor: "b" }]);
+    expect(hub.reassignSupervisors(["b"])).toEqual([]);
   });
 
   it("keeps the router of a channel with nobody running", () => {
@@ -330,6 +337,27 @@ describe("router failover", () => {
     hub.upsertChannel({ name: "group", members: ["a"], supervisor: "a" });
     expect(hub.reassignSupervisors([])).toEqual([]);
     expect(hub.getChannel("group")?.supervisor).toBe("a");
+  });
+});
+
+describe("channel summary notes", () => {
+  it("adds a note to the summary, on one line", () => {
+    hub.upsertChannel({ name: "dev", members: [], summary: "so far" });
+    hub.noteInSummary("dev", "impl: first\nsecond line");
+    expect(hub.getChannel("dev")?.summary).toBe("so far\nimpl: first second line");
+  });
+
+  it("keeps the summary short, dropping the oldest part", () => {
+    hub.upsertChannel({ name: "dev", members: [], summary: "old ".repeat(200) });
+    hub.noteInSummary("dev", "newest note");
+    const summary = hub.getChannel("dev")!.summary!;
+    expect(summary.length).toBeLessThanOrEqual(500);
+    expect(summary.endsWith("newest note")).toBe(true);
+  });
+
+  it("ignores a channel that does not exist", () => {
+    hub.noteInSummary("nosuch", "note");
+    expect(hub.readChannels()).toEqual([]);
   });
 });
 

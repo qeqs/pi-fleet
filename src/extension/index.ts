@@ -140,7 +140,7 @@ export function buildLookup(hub: Hub): Map<string, FleetMessage> {
 }
 
 /** Agent names @mentioned in a message (e.g. "@bob" -> ["bob"]). */
-function mentionedAgents(text: string): string[] {
+export function mentionedAgents(text: string): string[] {
   const out: string[] = [];
   const re = /@([A-Za-z0-9_-]+)/g;
   let m: RegExpExecArray | null;
@@ -248,6 +248,20 @@ export function routingPrompt(channel: ChannelConfig, m: FleetMessage, members: 
     `   If this message completes the task (a final answer, an APPROVE, or a done-report), respond=[] to end the turn.`,
     `   If it is a question or a request for work, route it to the one or two members best suited — not the whole room.`,
   ].join("\n");
+}
+
+/**
+ * Carry out a routing decision: update the summary, DM each chosen member, and leave
+ * a mark in the channel so routing is not a black box. Returns who was messaged.
+ */
+export function applyRoute(hub: Hub, by: string, channel: ChannelConfig, target: FleetMessage, respond: string[], summary: string): string[] {
+  if (summary.trim()) hub.setChannelSummary(channel.name, summary.trim());
+  const sent = respond.filter((member) => member !== by); // a supervisor answers in its own turn, not by DM
+  for (const member of sent) {
+    hub.appendMessage({ from: by, to: member, kind: "chat", text: directedMessageText(channel, target, summary), replyTo: target.id });
+  }
+  hub.appendMessage({ from: by, to: channel.name, kind: "activity", text: `routed to ${respond.join(", ") || "nobody"}` });
+  return sent;
 }
 
 /**
@@ -735,7 +749,6 @@ export default function (pi: ExtensionAPI) {
           details: undefined,
         };
       }
-      if (params.summary && params.summary.trim()) hub.setChannelSummary(params.channel, params.summary.trim());
       const all = hub.tailMessages(80);
       let target = params.messageId
         ? all.find((m) => m.id === params.messageId || shortId(m.id) === params.messageId)
@@ -757,25 +770,7 @@ export default function (pi: ExtensionAPI) {
       const valid = params.respond.filter((a) => agents[a]);
       const unknown = params.respond.filter((a) => !agents[a]);
       const summary = (params.summary && params.summary.trim()) || channel.summary || "";
-      const sent: string[] = [];
-      for (const member of valid) {
-        if (member === name) continue; // supervisor responds directly in-turn, no self-DM
-        hub.appendMessage({
-          from: name,
-          to: member,
-          kind: "chat",
-          text: directedMessageText(channel, target, summary),
-          replyTo: target.id,
-        });
-        sent.push(member);
-      }
-      // the channel view shows this, so routing is not a black box
-      hub.appendMessage({
-        from: name,
-        to: params.channel,
-        kind: "activity",
-        text: `routed to ${[...sent, ...(params.respond.includes(name) ? [name] : [])].join(", ") || "nobody"}`,
-      });
+      const sent = applyRoute(hub, name, channel, target, valid, summary);
       const note = unknown.length ? ` (unknown: ${unknown.join(", ")})` : "";
       const selfNote = params.respond.includes(name) ? ". You picked yourself: do that work once, now, then end your turn" : "";
       return {

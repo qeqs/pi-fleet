@@ -15,7 +15,7 @@ describe("isValidAgentName", () => {
   });
 
   it("refuses the names the bus keeps for itself", () => {
-    for (const name of ["group", "user", "system"]) expect(isValidAgentName(name)).toBe(false);
+    for (const name of ["group", "user", "system", "router"]) expect(isValidAgentName(name)).toBe(false);
   });
 });
 

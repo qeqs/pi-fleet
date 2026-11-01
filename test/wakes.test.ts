@@ -61,6 +61,37 @@ describe("computeWakes", () => {
     expect(hub.pausedReason()).toContain("--max-hops");
   });
 
+  describe("with the dedicated router", () => {
+    beforeEach(() => hub.upsertChannel({ name: "group", members: ["sup", "impl", "rev"], supervisor: undefined }));
+    const route = (messages: FleetMessage[]) => {
+      const routed: string[] = [];
+      const result = computeWakes(messages, hub, buildLookup(hub), 0, (m) => routed.push(m.text));
+      return { routed, woken: [...result.keys()] };
+    };
+
+    it("hands a channel message to the router and wakes nobody", () => {
+      expect(route([say("user", "group", "build it")])).toEqual({ routed: ["build it"], woken: [] });
+    });
+
+    it("sends an @mention straight to the member, past the router", () => {
+      expect(route([say("impl", "group", "@rev please look")])).toEqual({ routed: [], woken: ["rev"] });
+    });
+
+    it("keeps the summary current when a mention bypasses the router", () => {
+      route([say("impl", "group", "@rev please look")]);
+      expect(hub.getChannel("group")?.summary).toContain("impl: @rev please look");
+    });
+
+    it("leaves a channel with a named supervisor to that agent", () => {
+      hub.upsertChannel({ name: "dev", members: ["sup", "rev"], supervisor: "sup" });
+      expect(route([say("user", "dev", "over to you")])).toEqual({ routed: [], woken: ["sup"] });
+    });
+
+    it("leaves DMs alone", () => {
+      expect(route([say("user", "rev", "direct")])).toEqual({ routed: [], woken: ["rev"] });
+    });
+  });
+
   it("does not treat a direct-prompt marker as a message to deliver", () => {
     const marker = hub.appendMessage({ from: "user", to: "impl", kind: "activity", text: "direct prompt" });
     expect(wakes([marker]).size).toBe(0);

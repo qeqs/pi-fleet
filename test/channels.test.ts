@@ -134,13 +134,18 @@ describe("Hub channel storage", () => {
     hub.setChannelSummary("dev", "summary text");
     expect(hub.getChannel("dev")?.summary).toBe("summary text");
   });
-  it("ensureDefaultChannel creates the group with all agents + a supervisor", () => {
+  it("ensureDefaultChannel creates the group with all agents, on the dedicated router", () => {
     hub.updateAgent("planner", { name: "planner", pid: 1, cwd: ".", status: "idle", startedAt: 0, lastReadOffset: 0, role: "planner" });
     hub.updateAgent("impl", { name: "impl", pid: 2, cwd: ".", status: "idle", startedAt: 0, lastReadOffset: 0, role: "implementer" });
     const ch = hub.ensureDefaultChannel();
     expect(ch.name).toBe(DEFAULT_CHANNEL);
     expect(ch.members.sort()).toEqual(["impl", "planner"]);
-    expect(["impl", "planner"]).toContain(ch.supervisor); // first agent (no "supervisor" role present)
+    expect(ch.supervisor).toBeUndefined();
+  });
+  it("ensureDefaultChannel moves a fleet off a worker it had picked as router", () => {
+    hub.updateAgent("impl", { name: "impl", pid: 2, cwd: ".", status: "idle", startedAt: 0, lastReadOffset: 0, role: "implementer" });
+    hub.upsertChannel({ name: DEFAULT_CHANNEL, members: ["impl"], supervisor: "impl" });
+    expect(hub.ensureDefaultChannel().supervisor).toBeUndefined();
   });
   it("ensureDefaultChannel prefers an agent with the supervisor role", () => {
     hub.updateAgent("boss", { name: "boss", pid: 1, cwd: ".", status: "idle", startedAt: 0, lastReadOffset: 0, role: "supervisor" });

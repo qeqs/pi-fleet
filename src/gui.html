@@ -221,6 +221,7 @@
     held: 0,               // agent messages the pause is holding back
     questions: [],         // agents waiting for an answer
     maxCost: null,         // spending limit in dollars, if any
+    routerStats: null,     // what the dedicated router has used
     mcp: { mcpServers: {} },
     extensions: { available: [], selected: {} },
     settingsTab: "fleet"
@@ -384,12 +385,12 @@
     if (isChannelSel(state.selected)) {
       var cname = channelNameOf(state.selected);
       var ch = getChannel(cname) || { name: cname, members: agentNames(), supervisor: null };
-      var sup = ch.supervisor || (ch.members && ch.members[0]) || "";
+      var sup = ch.supervisor ? "@" + ch.supervisor : "the router";
       var members = (ch.members || []).map(function (m) { return "@" + esc(m); }).join(", ") || "(none)";
       var summary = ch.summary ? '<div class="chsummary">Summary: ' + esc(ch.summary) + '</div>' : "";
       headerEl.innerHTML =
         '<span class="title"># ' + esc(cname) + '</span>' +
-        '<span class="hmeta">supervisor @' + esc(sup) + ' · members: ' + members + '</span>' +
+        '<span class="hmeta">routed by ' + esc(sup) + ' · members: ' + members + '</span>' +
         '<span class="hbtns"><button data-act="manage-channel">Manage</button><button data-act="clear-channel">Clear</button></span>' +
         summary;
       return;
@@ -498,7 +499,7 @@
       agentNames().forEach(function (n) { opts += '<option value="' + esc(n) + '">@ ' + esc(n) + "</option>"; });
       composerEl.innerHTML = '<div class="row"><select id="toSel" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:0 8px;font-size:13px">' + opts + '</select>' +
         '<textarea id="msgInput" placeholder="Message the group (or an agent) — Enter to send, Shift+Enter for newline"></textarea>' +
-        '<button id="sendBtn">Send</button></div><div class="hint">Channel messages are routed by the supervisor; pick an agent to DM directly.</div>';
+        '<button id="sendBtn">Send</button></div><div class="hint">Channel messages are routed to whoever should act; pick an agent to DM directly.</div>';
       var _sel = document.getElementById("toSel"); if (_sel) _sel.value = state.selected;
     } else {
       composerEl.innerHTML = '<div class="row"><textarea id="msgInput" placeholder="Message @' + esc(state.selected) + ' directly — Enter to send, Shift+Enter for newline"></textarea>' +
@@ -527,11 +528,11 @@
       mbodyEl.innerHTML = h;
     } else if (tab === "channels") {
       var h = "<h3>Channels</h3>";
-      h += '<div class="stat" style="margin-bottom:10px">A channel is a named group chat with a supervisor that routes each message to the relevant members (keeping token spend low). The default <code>#group</code> is always present and is managed by the fleet.</div>';
+      h += '<div class="stat" style="margin-bottom:10px">A channel is a named group chat. Each message goes to the members who should act, chosen by the router or by a supervisor agent you name. The default <code>#group</code> is always present and is managed by the fleet.</div>';
       state.channels.slice().forEach(function (c) {
         if (c.name === "group") return;
-        var sup = c.supervisor || (c.members && c.members[0]) || "";
-        h += '<div class="mrow"><span class="nm"># ' + esc(c.name) + '</span><span class="desc">supervisor @' + esc(sup) + " · " + (c.members || []).map(function (m) { return esc(m); }).join(", ") + '</span>';
+        var sup = c.supervisor ? "@" + c.supervisor : "the router";
+        h += '<div class="mrow"><span class="nm"># ' + esc(c.name) + '</span><span class="desc">routed by ' + esc(sup) + " · " + (c.members || []).map(function (m) { return esc(m); }).join(", ") + '</span>';
         h += '<button data-chedit="' + esc(c.name) + '">Edit</button><button class="del" data-chdel="' + esc(c.name) + '">Remove</button></div>';
         if (c.summary) h += '<div class="stat" style="margin:0 0 8px 12px">Summary: ' + esc(c.summary) + '</div>';
       });
@@ -540,7 +541,7 @@
       h += '<div class="field"><label>Members (pick agents)</label>';
       agentNames().forEach(function (n) { h += '<label class="chk"><input type="checkbox" class="chMember" value="' + esc(n) + '"><span>@ ' + esc(n) + '</span></label>'; });
       h += '</div>';
-      h += '<div class="field"><label>Supervisor (optional — defaults to the first member)</label><input id="chSup" placeholder="leave empty for first member"></div>';
+      h += '<div class="field"><label>Supervisor agent (optional: leave empty for the router)</label><input id="chSup" placeholder="leave empty for the router"></div>';
       h += '<button id="chAdd" style="margin-top:6px">Add channel</button>';
       mbodyEl.innerHTML = h;
       var addBtn = document.getElementById("chAdd");
@@ -603,7 +604,8 @@
       var addBtn = document.getElementById("mcpAdd");
       if (addBtn) addBtn.onclick = mcpAdd;
     } else if (tab === "usage") {
-      var spent = agentNames().reduce(function (sum, n) { var s = state.agents[n].stats; return sum + Number((s && s.cost) || 0); }, 0);
+      var router = state.routerStats;
+      var spent = agentNames().reduce(function (sum, n) { var s = state.agents[n].stats; return sum + Number((s && s.cost) || 0); }, Number((router && router.cost) || 0));
       var h4 = "<h3>Usage & cost</h3>";
       h4 += '<div class="stat" style="margin-bottom:10px">Spent so far: <b>$' + spent.toFixed(4) + "</b>" + (state.maxCost ? " of a $" + esc(state.maxCost) + " limit" : " (no limit)") + "</div>";
       h4 += '<div class="field"><label>Spending limit in dollars: the fleet pauses when it is reached</label><input id="budgetInput" value="' + esc(state.maxCost || "") + '" placeholder="e.g. 5"></div><button id="budgetSave">Save limit</button><h3>By agent</h3>';
@@ -613,6 +615,7 @@
         if (!s) { h4 += '<div class="mrow"><span class="nm">@ ' + esc(n) + '</span><span class="desc">no stats yet</span></div>'; return; }
         h4 += '<div class="mrow"><span class="nm">@ ' + esc(n) + '</span><span class="desc">' + (s.totalMessages || 0) + " msgs · " + (s.toolCalls || 0) + " tools</span><span class=\"stat\"><b>$" + Number(s.cost || 0).toFixed(4) + "</b> · " + (s.tokens && s.tokens.total || 0) + " tok</span></div>";
       });
+      if (router) h4 += '<div class="mrow"><span class="nm">router</span><span class="desc">routing channel messages</span><span class="stat"><b>$' + Number(router.cost || 0).toFixed(4) + "</b> · " + (router.tokens && router.tokens.total || 0) + " tok</span></div>";
       mbodyEl.innerHTML = h4;
       document.getElementById("budgetSave").onclick = function () {
         post("/budget", { dollars: Number(document.getElementById("budgetInput").value) }).then(function (r) {
@@ -787,6 +790,7 @@
       state.selected = "group";
     }
     metaEl.textContent = agentNames().length + " agent(s)";
+    state.routerStats = (snap.stats || {}).router || null;
     state.paused = snap.paused || null;
     state.held = snap.held || 0;
     state.questions = snap.questions || [];
@@ -826,6 +830,7 @@
   es.addEventListener("question_gone", function (e) { var id = JSON.parse(e.data).id; state.questions = state.questions.filter(function (q) { return q.id !== id; }); renderQuestions(); });
   es.addEventListener("stats", function (e) {
     var s = JSON.parse(e.data);
+    if (s.name === "router") state.routerStats = s.stats;
     if (state.agents[s.name]) { state.agents[s.name].stats = s.stats; if (state.selected === s.name) renderHeader(); }
     if (overlayEl.classList.contains("show") && state.settingsTab === "usage" && document.activeElement.id !== "budgetInput") renderSettings();
   });

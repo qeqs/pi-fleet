@@ -80,7 +80,7 @@ async function modelChecks(hub: Hub): Promise<Check[]> {
   } catch {
     return []; // already reported by the config check
   }
-  const models = [...new Set([cfg?.defaultModel, ...(cfg?.agents ?? []).map((a) => a.model)].filter((m): m is string => !!m))];
+  const models = [...new Set([cfg?.defaultModel, cfg?.routerModel, ...(cfg?.agents ?? []).map((a) => a.model)].filter((m): m is string => !!m))];
   const checks = await Promise.all(
     models.map(async (model): Promise<Check> => {
       const contextWindow = await probeContextWindow(model);

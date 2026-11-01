@@ -357,8 +357,10 @@ describe.skipIf(!executable)("the desktop app", () => {
     const pid = fleet.otherSupervisor()!;
     const gone = new Promise((resolve) => app!.process().once("exit", resolve));
     await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
-    await step("the app to leave", gone, 30000);
-    app = undefined;
+    if (process.platform !== "darwin") {
+      await step("the app to leave", gone, 30000); // a Mac app stays open, to be reopened from the Dock
+      app = undefined;
+    }
     await until("the supervisor to go with it", () => !isPidAlive(pid), 15000);
     expect(fs.existsSync(shown)).toBe(false);
   }, 120000);

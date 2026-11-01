@@ -1,8 +1,10 @@
 # Goal: ship pi-fleet 1.1 from the first real use of 1.0
 
 Owner: pi-fleet
-Status: OPEN. Set 2026-11-01, after the owner installed 1.0 and got no answer from the router and
-empty messages in the agents' chats.
+Status: RELEASED as `v1.1.0`, with one check left. Set 2026-11-01, after the owner installed 1.0 and
+got no answer from the router and empty messages in the agents' chats. The walkthrough below ran on
+a build from just before the last two fixes, and the screen locked before the published installer
+could take a task to `APPROVE` itself.
 
 ## Definition of done
 - Every item in milestone 8 of `ROADMAP.md` is `[x]` (implemented + verified).
@@ -14,6 +16,12 @@ empty messages in the agents' chats.
 The rules of the 1.0 goal below still apply. New ideas go into **Next** in `ROADMAP.md`.
 
 ## Progress log
+- 2026-11-01: `v1.1.0` released, with CI green on Windows, Linux and macOS and the Release workflow
+  finishing a task with each form of the install on each system. The published Windows installer
+  matches the release's checksum, it installs here, and the installed sources match the tag. Its
+  window opened on an empty project, but the session was locked by then, so nobody saw that page.
+  CI's first run on Linux and macOS found what Windows hid: the system proxy can be unread when
+  the app starts, and with no model set up `fleet doctor` hung.
 - 2026-11-01: The installed app, walked through in its own windows on a real Windows machine.
   From the first-run screen through a crew on hf-space-qwen38, a Russian task went planner,
   implementer, reviewer, `APPROVE` in 168s with 3 messages and 264k tokens, and the crew's test

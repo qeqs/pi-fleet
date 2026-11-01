@@ -1,7 +1,8 @@
 # pi-fleet roadmap
 
-The road from today's working prototype to a 1.0 that someone other than its author can
-install and trust with real work. The current goal in [GOAL.md](GOAL.md) is to finish this file.
+The road from a working prototype to a 1.0 that someone other than its author can install and
+trust with real work, and what came after. 1.0 shipped on 2026-11-01. The current goal is in
+[GOAL.md](GOAL.md).
 
 Milestones run in order, because each one relies on the one before: there is no point
 polishing a GUI over messages that can vanish. An item is done when a test covers it, and a
@@ -17,6 +18,7 @@ milestone is done when its **Done when** line has been demonstrated.
 | 5 | A GUI for daily use | No terminal or file editing needed day to day | 0.6 |
 | 6 | Safe parallel work | Several agents on one repo without collisions | 0.7 |
 | 7 | 1.0 | Installable, documented, reviewed | 1.0 |
+| 8 | First real use | Model errors explained, models set up in the GUI, a quieter group chat | 1.1 |
 
 ## Already shipped (0.1.0)
 
@@ -131,6 +133,34 @@ messages wait while it works.
 - [x] Getting-started guide, `CONTRIBUTING.md` and `CHANGELOG.md`
 
 **Done when:** `v1.0.0` is tagged, and a clean machine on each system can install it and finish the sdlc task by following the guide.
+
+## 8. First real use
+
+1.0 passed every check, and then its owner installed it and got no answer from the router and
+empty messages in the agents' chats. The models were down and nothing said so. On real models,
+the group chat had only ever run small tasks.
+
+- [x] A model error shows in the agent's chat, once, instead of as empty messages
+- [x] The router says why it failed, and does not wait out pi's retries
+- [x] A Models tab in Settings: add a server or an API key, test a model, choose the default and routing models
+- [x] A model is tested before a crew starts, and `fleet doctor` really asks it for a word
+- [x] A model chosen for an agent survives a restart, even if it was chosen while the crew started
+- [x] An agent wakes another only by opening its message with that name; a name in passing goes to the router
+- [x] Messages for an agent in the middle of a run arrive as one wake
+- [x] Agents do not acknowledge, the reviewer's verdict ends the job, and small jobs can skip OpenSpec
+- [x] `openspec init` adds nothing for other AI tools to the repository
+
+**Done when:** the `v1.1.0` installer, on a real machine, takes a task from the desktop app to `APPROVE` on a real model, and a model that cannot answer says why.
+
+## Next
+
+Not scheduled yet.
+
+- [ ] Find out which tools agents are missing: the built-in ones were enough in the real runs so far
+- [ ] Spend less on context: about 96% of the tokens in a real run were context sent again on each turn, so try prompt caching on providers that have it
+- [ ] Keep small jobs small: the planner still writes an OpenSpec proposal for a one-page app
+- [ ] Publish to the npm registry, which needs the owner's account
+- [ ] Sign the installers, which needs certificates in the owner's name
 
 ## Not planned for 1.0
 

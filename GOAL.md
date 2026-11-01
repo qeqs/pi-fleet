@@ -1,4 +1,35 @@
-# Goal: ship pi-fleet 1.0 by completing ROADMAP.md
+# Goal: ship pi-fleet 1.1 from the first real use of 1.0
+
+Owner: pi-fleet
+Status: OPEN. Set 2026-11-01, after the owner installed 1.0 and got no answer from the router and
+empty messages in the agents' chats.
+
+## Definition of done
+- Every item in milestone 8 of `ROADMAP.md` is `[x]` (implemented + verified).
+- `v1.1.0` is tagged, with CI green on Windows, Linux and macOS.
+- The installer from the `v1.1.0` release, on a real machine, takes a task from the desktop app to
+  `APPROVE` on a real model, driven through the app's own windows and not by a test script.
+
+## How to work it
+The rules of the 1.0 goal below still apply. New ideas go into **Next** in `ROADMAP.md`.
+
+## Progress log
+- 2026-11-01: Group chat reworked. The same task, "a web app calculator for a credit percent", on
+  hf-space-qwen38, one run each: 14 messages, 15 wakes, 56 model turns and 571k tokens before; 5
+  messages, 3 wakes, 33 turns and 240k tokens after, and no stray files from `openspec init`
+  (there were 12). The chain went planner, implementer, reviewer, `APPROVE`. The calculator's own
+  tests pass, and its result is right by hand: 1054.99 a month for 12,000 at 10% over 12 months.
+  The router read 6 of 6 test messages correctly on the real model. 13 of 13 mutations were caught.
+  One slow run under CPU load showed that a model chosen while a crew starts could be lost; fixed.
+  About 96% of the tokens are context sent again on each turn, which is in **Next**.
+- 2026-11-01: Model errors and model setup done. The report came down to three local models that
+  were all down, with pi's error turns drawn as empty messages, four per message, and a router
+  that could not say why it failed. Each failure now says what happened, and Settings has a Models
+  tab that adds a server or a key and tests a model for real.
+
+---
+
+# Previous goal: ship pi-fleet 1.0 by completing ROADMAP.md
 
 Owner: pi-fleet
 Status: DONE. Set and finished 2026-11-01, with `v1.0.0` tagged.

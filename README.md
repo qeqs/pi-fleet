@@ -221,6 +221,9 @@ Everything day to day happens in the page, with no terminal or config file:
 - **Settings**: `Fleet` edits `fleet.json`, `Channels` manages channels and who routes them
   (including `#group`), `Usage` shows spending and the limit, `Search` finds any message,
   archives included. `Clear` hides a channel's messages for everyone; they stay searchable.
+- **Models**: Settings → `Models` lists what pi knows, tests that a model answers, sets the default
+  and routing models, and adds servers and API keys. A model is tested before a crew starts, and
+  a model error shows in the agent's chat with what went wrong.
 - **Reviewing work**: an agent in a worktree has a `Changes` button, showing its diff and a
   `Merge` button. Settings also has `Tasks`, the agents' task board, and `Timeline`, which
   shows for each request who woke whom, why, and what it cost. Costs are the spending between

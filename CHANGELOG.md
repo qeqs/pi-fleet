@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Settings has a Models tab: add a server or an API key, test that a model answers, and choose the
+  default and routing models.
+- A model is tested before a crew starts, and `fleet doctor` really asks it for a word.
+- A model chosen for an agent survives a restart.
+- Fixed: a model error showed as empty messages in the agent's chat. It now shows the error, once.
+- Fixed: the router said it "gave no usable answer" without saying why, and waited out pi's retries.
+- Fixed: every request to pi kept a finished command alive for its full timeout, and every pi process
+  left its log file open.
+
 ## 1.0.0
 
 - Install with `npm install -g`, which gives you a `fleet` command, or with a desktop installer for

@@ -38,6 +38,9 @@ fleet --version
 pi-fleet runs [pi](https://pi.dev), and uses whatever models pi knows. Set this up once, and both
 the command line and the desktop app will find it in `~/.pi`.
 
+**In the app.** Open **Settings → Models** to add a server or an API key, and press **Test** to check
+that a model answers. You can also do it from the terminal, as below.
+
 **A hosted provider.** Install pi and sign in:
 
 ```bash
@@ -76,7 +79,9 @@ Go to the project you want the agents to work in, and run:
 fleet doctor
 ```
 
-Each line should say `ok`. A `warn` is safe to ignore for now. A `fail` tells you what to fix.
+Each line should say `ok`. A `warn` is safe to ignore for now. A `fail` tells you what to fix. The
+`model` line really asks the model for a word, so it also shows whether its server is up and its key
+is good.
 
 ## 4. Run your first task
 
@@ -85,7 +90,7 @@ The `sdlc` crew is three agents: a planner, an implementer and a reviewer.
 ### In the desktop app
 
 1. Open pi-fleet and choose your project folder.
-2. Pick a model, then press the `sdlc` crew.
+2. Pick a model, then press the `sdlc` crew. The app checks that the model answers before it starts.
 3. When the three agents show as idle, type a task, such as `Add a hello.txt containing the word hi`, and press Enter.
 4. Watch them work. The task is finished when the reviewer posts `APPROVE`.
 
@@ -136,6 +141,7 @@ use `/diff impl1` and `/merge impl1` in the terminal. See [Parallel work](README
 |---|---|
 | A `fail` from `fleet doctor` | Follow the message on that line. |
 | `pi does not know "provider/model"` | Finish step 2, and use the full `provider/id` name. |
+| `Model error: Connection error` | Nothing is answering at the model's address. Start its server, or test another in Settings → Models. |
 | The agents stay idle after a task | Check for a notice in `#group`, such as a pause or a model error. Send any message to lift a pause. |
 | `another supervisor is already running` | Another fleet is using this folder. Stop it, or pass `--dir` to use a separate one. |
 | Agents still running after you quit | `fleet list` shows them, and `fleet stop all` stops them. |

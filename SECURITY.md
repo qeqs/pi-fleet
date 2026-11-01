@@ -29,6 +29,7 @@ pi-fleet adds coordination, not a sandbox.
 | Other accounts on your machine | The hub is private to its owner, and bridge sockets are too, on Linux and macOS. |
 | A folder you open in the desktop app | The app asks before opening a new folder that has its own fleet or pi configuration. |
 | A program planted in a folder | Programs run by full path, never through a shell. |
+| Model keys | Saved in pi's own files, private to their owner. The GUI never shows a key again, and refuses one from another machine, because its connection is not encrypted. |
 
 Whoever holds the GUI token controls the fleet, which includes starting agents and editing their
 configuration. Treat the link printed at startup like a password.

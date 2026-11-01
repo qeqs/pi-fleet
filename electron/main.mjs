@@ -62,9 +62,20 @@ function waitForHttp(url, timeoutMs = 90000) {
   });
 }
 
+/** What the system would use for the web. Asked afresh, since a new app may not have read it yet. */
+async function systemProxy() {
+  try {
+    await session.defaultSession.forceReloadProxyConfig();
+    return await session.defaultSession.resolveProxy("https://example.com");
+  } catch {
+    return "DIRECT";
+  }
+}
+
 async function startSupervisor(dir) {
   const port = await findFreePort();
-  const proxy = proxyEnv(process.env, await session.defaultSession.resolveProxy("https://example.com").catch(() => "DIRECT"));
+  const proxy = proxyEnv(process.env, await systemProxy());
+  console.log(`[desktop] proxy: ${proxy.HTTPS_PROXY ?? "none"}`);
   supervisorOutput = "";
   supervisorUp = false;
   const child = spawn(

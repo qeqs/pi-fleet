@@ -206,6 +206,8 @@ describe.skipIf(!executable)("the desktop app", () => {
   it("gives agents the system proxy, and still reaches a local model", async () => {
     const { userData, one } = folders("proxy");
     const page = await launch(userData, { PI_FLEET_PROJECT: one, HTTPS_PROXY: "", HTTP_PROXY: "", NO_PROXY: "" }, ["--proxy-server=127.0.0.1:9"]);
+    let desktopLog = "";
+    app!.process().stdout?.on("data", (d) => (desktopLog += d));
     expect(await app!.evaluate(({ session }) => session.defaultSession.resolveProxy("https://example.com"))).toBe("PROXY 127.0.0.1:9");
     await startCrew(page);
     await page.fill("#msgInput", "@implementer [[run node -p process.env.HTTPS_PROXY]]");
@@ -214,7 +216,7 @@ describe.skipIf(!executable)("the desktop app", () => {
     await until("the command", ran, 45000).catch(async () => {
       throw new Error(`the command did not finish. The implementer's requests: ${JSON.stringify((await model.log()).filter((r) => r.agent === "implementer").slice(-3))}`);
     });
-    expect((await ran())!.last).toContain("http://127.0.0.1:9");
+    expect((await ran())!.last, desktopLog.slice(0, 1500)).toContain("http://127.0.0.1:9");
   }, 120000);
 
   it("shows the running app when it is started a second time", async () => {

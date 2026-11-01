@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Hub, isPidAlive } from "./hub.ts";
 import { bridgeListening, packageBinArgv, piArgv } from "./rpc.ts";
 import { HUB_FORMAT, readHubFormat } from "./hubformat.ts";
+import { onPath } from "./programs.ts";
 import { configPath, loadFleetConfig } from "./config.ts";
 import { probeContextWindow } from "./spawn.ts";
 
@@ -106,6 +107,7 @@ export async function cmdDoctor(dir: string | undefined, baseCwd: string): Promi
     { status: "ok", label: "node", detail: process.version },
     toolCheck("pi", () => piArgv(ROOT, []), "fail"),
     toolCheck("openspec", () => packageBinArgv(ROOT, "@fission-ai/openspec", "openspec"), "warn"),
+    toolCheck("git", () => [onPath("git") ?? "git"], "warn"),
     writableCheck(hub),
     formatCheck(hub),
     configCheck(hub),

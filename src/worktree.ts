@@ -6,6 +6,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { onPath } from "./programs.ts";
 
 export interface Worktree {
   /** The main checkout. */
@@ -23,7 +24,9 @@ export interface MergeResult {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const program = onPath("git");
+  if (!program) throw new Error("git is not installed");
+  return execFileSync(program, args, { cwd, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
 function succeeds(cwd: string, ...args: string[]): boolean {

@@ -1,10 +1,10 @@
 /**
  * The one-shot `fleet` commands: everything except `up` and `serve`.
  */
-import { execSync } from "node:child_process";
+import { killProcessTree } from "./programs.ts";
 import fs from "node:fs";
 import path from "node:path";
-import { Hub, isPidAlive } from "./hub.ts";
+import { Hub, isPidAlive, printable } from "./hub.ts";
 import { PiRpcBridge, bridgeListening } from "./rpc.ts";
 import { saveFleetConfig, templateConfig, configPath } from "./config.ts";
 import { TEMPLATES } from "./templates.ts";
@@ -47,12 +47,7 @@ export async function cmdStop(target: string | undefined, dir: string | undefine
       continue;
     }
     try {
-      if (process.platform === "win32") {
-        // /T kills the process tree (pi spawns children)
-        execSync(`taskkill /PID ${a.pid} /T /F`, { stdio: "ignore" });
-      } else {
-        process.kill(a.pid, "SIGTERM");
-      }
+      killProcessTree(a.pid);
       console.log(`${a.name}: stopped (pid ${a.pid})`);
     } catch (err) {
       console.log(`${a.name}: ${String(err)}`);
@@ -76,7 +71,7 @@ export function cmdLog(name: string | undefined, dir: string | undefined, baseCw
     return;
   }
   console.log(`--- ${file} ---`);
-  console.log(fs.readFileSync(file, "utf8"));
+  console.log(printable(fs.readFileSync(file, "utf8")));
 }
 
 /** `fleet init [dir]` — create a starter fleet.json (does not overwrite). */

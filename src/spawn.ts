@@ -2,7 +2,7 @@
  * Starting agents: resolves lean mode, launches a detached bridge per agent, and
  * connects to it over named pipes.
  */
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Hub } from "./hub.ts";
 import { PiRpc, PiRpcBridge, piArgv, type StreamingBehavior, packageBinArgv } from "./rpc.ts";
 import { isValidAgentName } from "./spec.ts";
+import { killProcessTree } from "./programs.ts";
 import type { Limits } from "./cli.ts";
 import type { Worktree } from "./worktree.ts";
 
@@ -120,24 +121,6 @@ function pipePath(kind: "in" | "out", name: string, hubDir: string): string {
   return process.platform === "win32" ? `\\\\.\\pipe\\${base}` : path.join(os.tmpdir(), `${base}.sock`);
 }
 
-/** Kill a process and its whole tree (taskkill /T on Windows). */
-export function killProcessTree(pid: number): void {
-  if (!pid || pid <= 0) return;
-  if (process.platform === "win32") {
-    try {
-      execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" });
-    } catch {
-      // ignore
-    }
-  } else {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // ignore
-    }
-  }
-}
-
 /**
  * Spawn an agent: launch a detached bridge (which owns the pi child and exposes
  * it over named pipes), then connect a PiRpcBridge client to those pipes.
@@ -178,10 +161,12 @@ export async function spawnAgent(hub: Hub, name: string, cwd: string, limits: Li
   // process tree is clean: supervisor -> node(bridge) -> pi. The registry pid
   // is then the bridge, and taskkill /T on it takes pi down with it.
   const [node, tsxCli] = packageBinArgv(ROOT, "tsx", "tsx");
+  // the desktop app's key to the GUI stays out of what an agent can print to its model
+  const { PI_FLEET_GUI_TOKEN: _token, ...inherited } = process.env;
   const bridge = spawn(node, [tsxCli, bridgeScript], {
     cwd: hub.dir,
     env: {
-      ...process.env,
+      ...inherited,
       PI_FLEET_PIPE_IN: pipeIn,
       PI_FLEET_PIPE_OUT: pipeOut,
       PI_FLEET_ARGV: JSON.stringify(piArgv(ROOT, args)),

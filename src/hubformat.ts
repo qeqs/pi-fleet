@@ -38,6 +38,7 @@ const UPGRADES: Record<number, (dir: string) => void> = {
   0: (dir) => {
     upgradePausedFile(dir);
     upgradeGroupSupervisor(dir);
+    fs.chmodSync(dir, 0o700); // releases before 1.0 left conversations readable by other users
   },
 };
 

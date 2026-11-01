@@ -67,7 +67,7 @@ describe("task boards", () => {
   it("says so when the board's tool is not installed", async () => {
     const searched = process.env.PATH;
     process.env.PATH = "";
-    await expect(listTasks("beads", ".", ".")).rejects.toThrow(/bd(\.exe)? is not installed/);
+    await expect(listTasks("beads", ".", ".")).rejects.toThrow("bd is not installed");
     process.env.PATH = searched;
   });
 

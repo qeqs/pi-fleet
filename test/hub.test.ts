@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { Hub, messageTooLong, addressLabel, formatMessage, MAX_MESSAGE_LEN, shortId } from "../src/hub.ts";
+import { Hub, messageTooLong, addressLabel, formatMessage, MAX_MESSAGE_LEN, printable, shortId } from "../src/hub.ts";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -337,6 +337,16 @@ describe("router failover", () => {
     hub.upsertChannel({ name: "group", members: ["a"], supervisor: "a" });
     expect(hub.reassignSupervisors([])).toEqual([]);
     expect(hub.getChannel("group")?.supervisor).toBe("a");
+  });
+});
+
+describe("printable", () => {
+  it("drops what a terminal would act on, and keeps the text", () => {
+    expect(printable("\x1b]0;owned\x07hello\x1b[2J there\x9b")).toBe("]0;ownedhello[2J there");
+  });
+
+  it("keeps line breaks and tabs", () => {
+    expect(printable("one\n\ttwo\r\n")).toBe("one\n\ttwo\r\n");
   });
 });
 

@@ -37,6 +37,15 @@ describe("repoRoot", () => {
   });
 });
 
+describe("a hostile repository", () => {
+  it.runIf(process.platform === "win32")("cannot replace git with a program in the folder", () => {
+    const folder = path.join(tmp, "hostile");
+    fs.mkdirSync(folder);
+    fs.copyFileSync(path.join(process.env.SystemRoot!, "System32", "whoami.exe"), path.join(folder, "git.exe"));
+    expect(repoRoot(folder)).toBeNull(); // whoami would have answered with a name
+  });
+});
+
 describe("repoSubfolder", () => {
   it("says where a folder sits in its repository", () => {
     fs.mkdirSync(path.join(repo, "packages", "a"), { recursive: true });

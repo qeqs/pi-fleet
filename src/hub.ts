@@ -144,7 +144,7 @@ export interface AgentInfo {
 
 export class Hub {
   constructor(readonly dir: string) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); // conversations, and the key to the GUI
   }
 
   get messagesFile(): string {
@@ -816,6 +816,11 @@ export function shortId(id: string): string {
 /** An address as people read it: `#channel` or `@agent`. */
 export function addressLabel(to: string, channels: ChannelConfig[] = []): string {
   return to === DEFAULT_CHANNEL || channels.some((c) => c.name === to) ? `#${to}` : `@${to}`;
+}
+
+/** Text from a model, safe to print: no escape sequences to retitle or rewrite a terminal. */
+export function printable(text: string): string {
+  return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
 }
 
 export function formatMessage(m: FleetMessage, lookup?: Map<string, FleetMessage>, channels: ChannelConfig[] = []): string {

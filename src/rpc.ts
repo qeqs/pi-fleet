@@ -2,7 +2,8 @@
  * Minimal pi RPC client — spawns `pi --mode rpc` as a child process and
  * speaks JSONL over stdin/stdout. See pi docs: rpc.md / rpc-commands.md.
  */
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { killProcessTree } from "./programs.ts";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -166,12 +167,7 @@ export class PiRpc {
     await new Promise((r) => setTimeout(r, 1500));
     if (!this.exited) {
       if (process.platform === "win32" && this.pid) {
-        // /T kills the whole tree (pi may have spawned tools of its own)
-        try {
-          execSync(`taskkill /PID ${this.pid} /T /F`, { stdio: "ignore" });
-        } catch {
-          // ignore
-        }
+        killProcessTree(this.pid); // pi may have spawned tools of its own
       } else {
         try {
           this.proc.kill();

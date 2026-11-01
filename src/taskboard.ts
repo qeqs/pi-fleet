@@ -3,6 +3,7 @@
  * their tools; this reads the same board so the GUI can show it.
  */
 import { execFile } from "node:child_process";
+import { onPath } from "./programs.ts";
 import { packageBinArgv } from "./rpc.ts";
 
 export type TaskBoardKind = "openspec" | "beads";
@@ -36,8 +37,7 @@ function run(argv: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = execFile(argv[0], argv.slice(1), { cwd, timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       // openspec exits 1 with a JSON report when a project has no board; that is an answer
-      if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") reject(new Error(`${argv[0]} is not installed`));
-      else if (err && !stdout.trim().startsWith("{")) reject(new Error(stderr.trim() || err.message));
+      if (err && !stdout.trim().startsWith("{")) reject(new Error(stderr.trim() || err.message));
       else resolve(stdout);
     });
     child.stdin?.end();
@@ -45,6 +45,10 @@ function run(argv: string[], cwd: string): Promise<string> {
 }
 
 export async function listTasks(kind: TaskBoardKind, root: string, cwd: string): Promise<BoardTask[]> {
-  if (kind === "beads") return parseBeadsList(await run([process.platform === "win32" ? "bd.exe" : "bd", "list", "--json"], cwd));
+  if (kind === "beads") {
+    const bd = onPath("bd");
+    if (!bd) throw new Error("bd is not installed");
+    return parseBeadsList(await run([bd, "list", "--json"], cwd));
+  }
   return parseOpenspecList(await run([...packageBinArgv(root, "@fission-ai/openspec", "openspec"), "list", "--json"], cwd));
 }

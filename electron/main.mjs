@@ -10,13 +10,13 @@
  *
  * Run with: npm run desktop
  */
-import { app, BrowserWindow, dialog, Menu, shell } from "electron";
-import { spawn, execSync } from "node:child_process";
+import { app, BrowserWindow, dialog, Menu, session, shell } from "electron";
+import { spawn, execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readProjects, rememberProject, startingProject } from "./projects.mjs";
+import { needsTrust, readProjects, rememberProject, startingProject } from "./projects.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -93,7 +93,8 @@ function stopSupervisor() {
   const pid = supervisor.pid;
   supervisor = null;
   try {
-    if (process.platform === "win32") execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" });
+    // by full path: a bare name would also find a taskkill in the project folder
+    if (process.platform === "win32") execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
     else process.kill(pid, "SIGTERM");
   } catch {
     // already gone
@@ -124,6 +125,21 @@ async function chooseProject() {
   return canceled ? null : filePaths[0];
 }
 
+/** Opening a folder starts its agents, so one that brings its own setup is the person's call. */
+async function trusted(dir) {
+  if (!needsTrust(projectsFile(), dir)) return true;
+  const { response } = await dialog.showMessageBox({
+    type: "warning",
+    title: "Open this folder?",
+    message: `Do you trust ${dir}?`,
+    detail: "This folder has its own fleet or pi configuration. Opening it starts its agents and runs any code that configuration names.",
+    buttons: ["Open", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+  });
+  return response === 0;
+}
+
 async function chooseAndOpen() {
   const dir = await chooseProject();
   if (dir) await switchTo(dir);
@@ -143,7 +159,7 @@ async function openProject(dir) {
 }
 
 async function switchTo(dir) {
-  if (dir === project) return;
+  if (dir === project || !(await trusted(dir))) return;
   const previous = project;
   stopSupervisor();
   try {
@@ -170,9 +186,18 @@ function createWindow() {
     mainWindow.setTitle(`${title} — ${path.basename(project)}`);
   });
   // open external links in the system browser, not new Electron windows
+  const openOutside = (u) => {
+    if (/^https?:\/\//.test(u)) shell.openExternal(u);
+  };
   mainWindow.webContents.setWindowOpenHandler(({ url: u }) => {
-    if (u.startsWith("http")) shell.openExternal(u);
+    openOutside(u);
     return { action: "deny" };
+  });
+  // and this window only ever shows the fleet's own page
+  mainWindow.webContents.on("will-navigate", (e, u) => {
+    if (new URL(u).hostname === "127.0.0.1") return;
+    e.preventDefault();
+    openOutside(u);
   });
   mainWindow.on("closed", () => (mainWindow = null));
 }
@@ -180,11 +205,13 @@ function createWindow() {
 async function launch() {
   buildMenu();
   const dir = process.env.PI_FLEET_PROJECT ?? startingProject(projectsFile()) ?? (await chooseProject());
-  if (!dir) return app.quit();
+  if (!dir || !(await trusted(dir))) return app.quit();
   await openProject(dir);
 }
 
 app.whenReady().then(() => {
+  // the page asks for nothing but notifications
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, allow) => allow(permission === "notifications"));
   launch().catch((e) => {
     console.error("[desktop] failed to start:", e.message);
     stopSupervisor();

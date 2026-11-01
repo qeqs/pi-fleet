@@ -14,7 +14,8 @@
     "src",
     "electron",
     "GETTING_STARTED.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "npm-shrinkwrap.json"
   ],
   "engines": {
     "node": ">=24"
@@ -62,6 +63,12 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.developer-tools"
+    }
+  },
+  "overrides": {
+    "undici": "^8.12.3",
+    "@earendil-works/pi-coding-agent": {
+      "minimatch": "^11.0.1"
     }
   }
 }

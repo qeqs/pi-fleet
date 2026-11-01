@@ -5,6 +5,9 @@ on:
     branches: [main, "milestone-*"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -24,4 +27,4 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       - run: npm run typecheck
       # two test files at a time: real agents and a browser are heavy for a small runner
-      - run: npm test -- --maxWorkers=2
+      - run: ${{ runner.os == 'Linux' && 'xvfb-run -a' || '' }} npm test -- --maxWorkers=2

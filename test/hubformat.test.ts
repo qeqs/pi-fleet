@@ -60,6 +60,19 @@ describe("upgradeHub", () => {
     expect(readChannels()[0].supervisor).toBe("a");
   });
 
+  it.skipIf(process.platform === "win32")("closes a hub other users could read", () => {
+    fs.chmodSync(dir, 0o755);
+    fs.writeFileSync(path.join(dir, "messages.jsonl"), "");
+    upgradeHub(dir);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
+  it.skipIf(process.platform === "win32")("creates new hubs for their owner alone", () => {
+    const hubDir = path.join(dir, "new-hub");
+    new Hub(hubDir);
+    expect(fs.statSync(hubDir).mode & 0o777).toBe(0o700);
+  });
+
   it("refuses a hub from a newer release and leaves it alone", () => {
     fs.writeFileSync(path.join(dir, "format.json"), JSON.stringify({ format: HUB_FORMAT + 1 }));
     expect(() => upgradeHub(dir)).toThrow(/written by a newer pi-fleet .*Update pi-fleet/);

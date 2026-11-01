@@ -42,12 +42,15 @@ export function parseAgentSpec(spec: string): ParsedAgentSpec {
 /** Names the bus keeps for itself: an agent may not pose as the user or shadow the default channel. */
 const RESERVED_NAMES = new Set(["group", "user", "system", "router"]);
 
+/** Names that mean something else as an object key, or as a Windows file name. */
+const UNSAFE_NAME = /^(__proto__|constructor|prototype|con|prn|aux|nul|com\d|lpt\d)$/i;
+
 /**
  * Agent names end up in file paths, pipe names and @mentions, so they are limited
  * to the characters a mention can carry.
  */
 export function isValidAgentName(name: string): boolean {
-  return /^[A-Za-z0-9_-]{1,64}$/.test(name) && !RESERVED_NAMES.has(name);
+  return /^[A-Za-z0-9_-]{1,64}$/.test(name) && !RESERVED_NAMES.has(name) && !UNSAFE_NAME.test(name);
 }
 
 export function agentNameFromSpec(spec: string): string {

@@ -493,6 +493,29 @@ describe("fleet end to end", () => {
     }, 60000);
   });
 
+  it("keeps the GUI's key out of what an agent can see", async () => {
+    env.PI_FLEET_GUI_TOKEN = "the-gui-key";
+    try {
+      const { hub } = startFleet("no-key", ["up", "--agent", "alice"]);
+      await idle(hub, ["alice"]);
+      await exchange(hub, "alice", '[[run node -p "process.env.PI_FLEET_GUI_TOKEN ?? String(process.env.PATH).length"]]');
+      await until("the command's answer", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.match(/^\d+/)));
+      expect((await llmLog()).filter((r) => r.agent === "alice").some((r) => r.conversation.includes("the-gui-key"))).toBe(false);
+    } finally {
+      delete env.PI_FLEET_GUI_TOKEN;
+    }
+  }, 60000);
+
+  it("does not let a message rewrite the terminal", async () => {
+    const { proc, hub } = startFleet("escapes", ["up", "--agent", "alice"]);
+    await idle(hub, ["alice"]);
+    let printed = "";
+    proc.stdout!.on("data", (d) => (printed += d));
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "\x1b]0;retitled\x07 marked message" });
+    await until("the message", () => printed.includes("marked message"));
+    expect(printed).not.toContain("\x1b]0;");
+  }, 60000);
+
   it("gives agents the task board fleet.json names", async () => {
     const hubDir = path.join(tmp, "board-config");
     fs.mkdirSync(hubDir, { recursive: true });

@@ -69,7 +69,14 @@ outServer.on("error", (e) => note(`[bridge] out pipe error: ${e.message}`));
 // A killed bridge leaves its Unix socket files behind, and they would block this listen.
 // (A live bridge for this agent is ruled out before a new one is spawned.)
 if (process.platform !== "win32") for (const pipe of [pipeIn, pipeOut]) fs.rmSync(pipe, { force: true });
-outServer.listen(pipeOut, () => note(`[bridge] out pipe listening`));
+/** Whoever can reach these sockets can drive pi. Named pipes have no such file. */
+function ownerOnly(pipe: string): void {
+  if (process.platform !== "win32") fs.chmodSync(pipe, 0o600);
+}
+outServer.listen(pipeOut, () => {
+  ownerOnly(pipeOut);
+  note(`[bridge] out pipe listening`);
+});
 pi.stdout!.on("data", (c: Buffer) => {
   const s = c.toString("utf8");
   if (outClients.size > 0) {
@@ -93,7 +100,10 @@ const inServer = net.createServer((socket) => {
   socket.on("error", () => {});
 });
 inServer.on("error", (e) => note(`[bridge] in pipe error: ${e.message}`));
-inServer.listen(pipeIn, () => note(`[bridge] in pipe listening`));
+inServer.listen(pipeIn, () => {
+  ownerOnly(pipeIn);
+  note(`[bridge] in pipe listening`);
+});
 
 pi.on("exit", (code) => {
   note(`[bridge] pi exited (${code})`);

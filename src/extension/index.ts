@@ -18,6 +18,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import { onPath } from "../programs.ts";
 import { Hub, shortId, messageTooLong, addressLabel, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type FleetMessage, type ChannelConfig } from "../hub.ts";
 import { packageBinArgv } from "../rpc.ts";
 
@@ -724,7 +725,7 @@ export default function (pi: ExtensionAPI) {
           "beads",
           "Beads",
           "Run the beads (bd) issue tracker in the working directory. Requires `bd` on PATH (run `bd init` once in the project first). Examples: \"create <title>\", \"list\", \"show <id>\", \"close <id>\" (mark done), \"update <id> -s in_progress\", \"comment <id> <text>\". Use it to create and track issues/tasks.",
-          () => [process.platform === "win32" ? "bd.exe" : "bd"],
+          () => [onPath("bd") ?? "bd"],
         )
       : makeTaskBoardTool(
           "openspec",

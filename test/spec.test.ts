@@ -3,6 +3,17 @@ import { parseAgentSpec, agentNameFromSpec, agentCwdFromSpec, agentModelFromSpec
 
 const BS = "\\";
 
+describe("names that mean something else", () => {
+  it.each(["__proto__", "constructor", "prototype", "con", "NUL", "com1", "LPT9"])("refuses %s", (name) => {
+    expect(isValidAgentName(name)).toBe(false);
+  });
+
+  it("still allows names that only look close", () => {
+    expect(isValidAgentName("console")).toBe(true);
+    expect(isValidAgentName("com")).toBe(true);
+  });
+});
+
 describe("isValidAgentName", () => {
   it("accepts what an @mention can carry", () => {
     for (const name of ["planner", "agent-2", "qa_bot", "A1"]) expect(isValidAgentName(name)).toBe(true);

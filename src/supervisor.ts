@@ -2,12 +2,11 @@
  * The supervisor: spawns or re-attaches the agents, tails the bus, pushes wakes to
  * agents, serves the GUI and runs the terminal chat.
  */
-import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { Hub, isPidAlive, formatMessage, shortId, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type ChannelConfig, type FleetMessage } from "./hub.ts";
+import { Hub, isPidAlive, formatMessage, shortId, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, type AgentInfo, type ChannelConfig, type FleetMessage, printable } from "./hub.ts";
 import { PiRpcBridge, bridgeListening } from "./rpc.ts";
 import { agentNameFromSpec, agentCwdFromSpec, agentModelFromSpec, agentRoleFromSpec, isValidAgentName } from "./spec.ts";
 import { CHAT_HELP, parseChatLine } from "./chat.ts";
@@ -16,7 +15,7 @@ import { loadFleetConfig, agentSpecFromConfig, saveFleetConfig, configPath, isBu
 import { expandTemplate, templateNames, templateDescription, TEMPLATES } from "./templates.ts";
 import { discoverExtensions, readMcpConfig, writeMcpConfig } from "./pi-resources.ts";
 import { computeWakes } from "./wakes.ts";
-import { availableModels, killProcessTree, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
+import { availableModels, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
 import { RestartPolicy } from "./restart.ts";
 import { describeQuestion, parseAnswer, questionFrom, type Answer, type Question } from "./questions.ts";
 import { fallbackRoute, ModelRouter, parseRouterReply, routeByRules, routerPrompt, type RouteDecision } from "./router.ts";
@@ -25,6 +24,7 @@ import { ensureWorktree, mergeWorktree, repoRoot, repoSubfolder, worktreeChanges
 import { buildTimeline } from "./timeline.ts";
 import { isTaskBoard, listTasks } from "./taskboard.ts";
 import { HUB_FORMAT, upgradeHub } from "./hubformat.ts";
+import { killProcessTree, openInBrowser } from "./programs.ts";
 import { UsageError, budgetArg, type FleetArgs, type Limits } from "./cli.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -149,7 +149,8 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   );
 
   // Bus output arrives while the user types: print above the input line, then redraw it.
-  const print = (s: string) => {
+  const print = (raw: string) => {
+    const s = printable(raw);
     if (!rl || !interactive || shuttingDown) {
       console.log(s);
       return;
@@ -616,12 +617,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       print(`  ⚠ GUI is exposed on ${args.host} over plain HTTP: whoever has this link controls the agents`);
     }
     if (args.open) {
-      try {
-        const cmd = process.platform === "win32" ? `start "" "${gui.url}"` : process.platform === "darwin" ? `open "${gui.url}"` : `xdg-open "${gui.url}"`;
-        execSync(cmd, { stdio: "ignore" });
-      } catch {
-        // ignore — the URL is printed above
-      }
+      openInBrowser(gui.url); // and if that fails, the link is printed above
     }
   }
 

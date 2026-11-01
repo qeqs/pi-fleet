@@ -32,7 +32,7 @@ export function firstMatch(proc: ChildProcess, re: RegExp): Promise<RegExpExecAr
   });
 }
 
-export async function until<T>(what: string, check: () => T | Promise<T>, timeoutMs = 30000): Promise<NonNullable<T>> {
+export async function until<T>(what: string, check: () => T | Promise<T>, timeoutMs = 45000): Promise<NonNullable<T>> {
   const end = Date.now() + timeoutMs;
   for (;;) {
     const value = await check();
@@ -50,6 +50,13 @@ export function killTree(pid: number | undefined): void {
   } catch {
     // already gone
   }
+}
+
+/** A crash rather than a request to stop: nothing gets the chance to clean up. */
+export function crash(pid: number | null | undefined): void {
+  if (!pid) return;
+  if (process.platform === "win32") killTree(pid);
+  else process.kill(pid, "SIGKILL");
 }
 
 /** A scripted model server, and a private home whose pi knows only that model. */

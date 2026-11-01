@@ -11,7 +11,7 @@ import { Hub, isPidAlive } from "../src/hub.ts";
 import { bridgeListening } from "../src/rpc.ts";
 import { HUB_FORMAT, readHubFormat } from "../src/hubformat.ts";
 import { execFileSync } from "node:child_process";
-import { FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
+import { crash, FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
 
 let tmp: string;
 let llm: ChildProcess;
@@ -213,8 +213,8 @@ describe("fleet end to end", () => {
     const first = startFleet("fresh", ["up", "--agent", "alice"]);
     await idle(first.hub, ["alice"]);
     await exchange(first.hub, "alice", "remember the word MANGO");
-    killTree(first.proc.pid);
-    killTree(first.hub.readAgents().alice.pid);
+    crash(first.hub.otherSupervisor());
+    crash(first.hub.readAgents().alice.pid);
     const second = startFleet("fresh", ["up", "--agent", "alice", "--fresh"]);
     await until("the fresh agent", () => second.hub.readAgents().alice.status === "idle" && !second.hub.otherSupervisor(0));
     await idle(second.hub, ["alice"]);
@@ -242,7 +242,7 @@ describe("fleet end to end", () => {
     await until("alice busy", () => first.hub.readAgents().alice.status === "busy");
     await sleep(1000);
     const { alice, bob } = first.hub.readAgents();
-    for (const pid of [first.proc.pid, alice.pid, bob.pid]) killTree(pid);
+    for (const pid of [first.hub.otherSupervisor(), alice.pid, bob.pid]) crash(pid);
     await until("alice's bridge to go", async () => !(await bridgeListening(alice.pipeIn!)));
 
     first.hub.appendMessage({ from: "bob", to: "alice", kind: "chat", text: "sent while everything was down" });
@@ -259,7 +259,7 @@ describe("fleet end to end", () => {
     const first = startFleet("cleanstop", ["up", "--agent", "alice"]);
     await idle(first.hub, ["alice"]);
     first.hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[slow 8]] abandoned job" });
-    await until("alice busy", () => first.hub.readAgents().alice.status === "busy");
+    await until("the model to be asked", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("abandoned job")));
     first.proc.stdin!.write("/quit\n");
     await new Promise((resolve) => first.proc.on("exit", resolve));
     const seen = (await llmLog()).filter((r) => r.agent === "alice" && r.last.includes("abandoned job")).length;
@@ -343,8 +343,8 @@ describe("fleet end to end", () => {
     const first = startFleet("routercrash", ["up", "--agent", "alice"]);
     await idle(first.hub, ["alice"]);
     const { pid } = first.hub.readAgents().alice;
-    killTree(first.proc.pid);
-    killTree(pid);
+    crash(first.hub.otherSupervisor());
+    crash(pid);
     await until("the supervisor to go", () => !isPidAlive(first.proc.pid ?? 0));
     first.hub.enqueueWake("router", JSON.stringify({ id: "x", ts: Date.now(), from: "user", to: "group", kind: "chat", text: "left waiting route=alice" }));
     expect(fs.existsSync(hubDir)).toBe(true);

@@ -204,8 +204,21 @@ run commands), and requests from another site's page are refused. The token is s
 - `--port N` — bind a fixed port (default: a free port is chosen).
 - `--host H` — bind address (default `127.0.0.1`; use `0.0.0.0` for LAN access).
 
-In the UI: send to `#group` or `@<agent>` from the composer; each agent pane shows a
-live activity feed (tool calls, streamed output, run state) and a status badge.
+Everything day to day happens in the page, with no terminal or config file:
+
+- **First run**: with no agents, pick a crew and a model, and the fleet starts and remembers it.
+- **Chat**: send to a channel or an agent from the composer. Each agent pane shows a live feed of
+  tool calls, streamed output and run state. Agent output is rendered as Markdown (tables, lists,
+  code) from escaped pieces, so nothing an agent writes can run in the page. What the fleet sends
+  an agent is collapsed, so you can tell it from what you typed. Drafts, open tool cards and your
+  scroll position survive streaming and reconnects.
+- **Agents**: `Abort run`, `Restart`, `Stop agent` and `Remove` on each agent, and a model picker
+  fed by pi's own list. A stopped agent has a `Start` button.
+- **Settings**: `Fleet` edits `fleet.json`, `Channels` manages channels and who routes them
+  (including `#group`), `Usage` shows spending and the limit, `Search` finds any message,
+  archives included. `Clear` hides a channel's messages for everyone; they stay searchable.
+- **Staying informed**: unread counts in the sidebar and the page title, and a desktop
+  notification when an agent asks you something or the fleet pauses while the page is hidden.
 
 ### Headless hosting (`fleet serve`)
 
@@ -383,14 +396,15 @@ src/gui.ts             web UI server (SSE + POST, no deps)
 src/gui.html           single-page web UI
 src/extension/index.ts pi extension loaded by each agent (tools, prompt, poller, roles)
 electron/main.mjs      Electron desktop shell (npm run desktop)
-test/                  vitest suite (unit tests + e2e with real pi and a scripted model)
+src/markdown.cjs       Markdown for agent output, inlined into the page
+test/                  vitest suite (unit, e2e with real pi and a scripted model, browser)
 .pi-fleet/             runtime state (created on first run)
 ```
 
 ## Development
 
 ```bash
-npm test         # run the vitest suite (about 2 minutes: the e2e tests boot real agents)
+npm test         # run the vitest suite (a few minutes: it boots real agents and a browser)
 npm run typecheck   # tsc --noEmit
 ```
 
@@ -403,7 +417,8 @@ timeout are configurable so tests run fast.
 `test/e2e.test.ts` runs the real supervisor, bridges and pi against `test/fake-llm.mjs`, a
 scripted OpenAI-compatible endpoint. It covers what the unit tests cannot see: a message
 actually travelling through the fleet (the sdlc chain, a busy agent, detached channels) and
-the brakes stopping real runs (hop and turn limits, Stop all).
+the brakes stopping real runs (hop and turn limits, Stop all). `test/gui-browser.test.ts` drives
+the page in a real browser the same way, using whatever Chrome or Edge is installed.
 
 ## Roadmap
 

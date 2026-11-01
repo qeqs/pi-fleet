@@ -21,6 +21,10 @@ Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
   in the roadmap. (Pull requests need `gh` or a token, which this environment does not have.)
 
 ## Progress log
+- 2026-11-01: Milestone 5 done (0.6.0). Demonstrated by `goes from an empty app to a finished
+  sdlc task` in `test/gui-browser.test.ts`: in real Chrome, from a fleet with no agents and no
+  config, a person picks a crew, sends a task and sees `APPROVE`, with `fleet.json` written for
+  them. Browser tests also found a real bug: history arriving late erased a message just sent.
 - 2026-11-01: Milestone 4 done (0.5.0). Real-model sdlc chain on hf-space-qwen38: 65s, no
   routing turn in any worker, router 262 tokens, implementer 10,118 (baseline 22,546 when it
   also routed), whole fleet 20,733. Rules settled `APPROVE` with no model call.

@@ -108,6 +108,10 @@ export interface ChannelConfig {
   supervisor?: string;
   /** model for the dedicated router on this channel (a cheap one is usually enough) */
   supervisorModel?: string;
+  /** the supervisor was chosen by a person, so the fleet must not reset it */
+  pinned?: boolean;
+  /** messages up to this time are hidden from the channel view */
+  clearedAt?: number;
   /** rolling summary of the channel, maintained by the supervisor */
   summary?: string;
 }
@@ -283,6 +287,17 @@ export class Hub {
     return { messages, nextOffset: offset + consumed };
   }
 
+  /** Messages containing `query`, newest first, from the bus and its archives. */
+  searchMessages(query: string, limit = 100): FleetMessage[] {
+    const needle = query.toLowerCase();
+    const archives = fs.readdirSync(this.dir).filter((f) => /^messages-.*\.jsonl$/.test(f)).sort();
+    const found: FleetMessage[] = [];
+    for (const file of [...archives.map((f) => path.join(this.dir, f)), this.messagesFile]) {
+      found.push(...this.readLogSince(file, 0).messages.filter((m) => m.kind === "chat" && m.text.toLowerCase().includes(needle)));
+    }
+    return found.reverse().slice(0, limit);
+  }
+
   /** Last N messages (whole file, tail). */
   tailMessages(n: number): FleetMessage[] {
     if (!fs.existsSync(this.messagesFile)) return [];
@@ -335,11 +350,19 @@ export class Hub {
     });
   }
 
+  /** Forget an agent: it leaves the registry and every channel. */
   removeAgent(name: string): void {
     this.withLock(() => {
       const agents = this.readAgents();
       delete agents[name];
       this.writeAgents(agents);
+      this.writeChannels(
+        this.readChannels().map((c) => ({
+          ...c,
+          members: c.members.filter((m) => m !== name),
+          supervisor: c.supervisor === name ? undefined : c.supervisor,
+        })),
+      );
     });
   }
 
@@ -670,7 +693,7 @@ export class Hub {
     const channel: ChannelConfig = {
       name: DEFAULT_CHANNEL,
       members: names.length ? names : existing?.members ?? [],
-      supervisor: roleSupervisor ? (existing?.supervisor ?? roleSupervisor) : undefined,
+      supervisor: existing?.pinned ? existing.supervisor : roleSupervisor ? (existing?.supervisor ?? roleSupervisor) : undefined,
       summary: existing?.summary,
     };
     this.upsertChannel(channel);

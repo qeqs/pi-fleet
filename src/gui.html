@@ -66,7 +66,34 @@
   .bubble pre{background:#0a0e14;border:1px solid var(--border);border-radius:6px;padding:10px;overflow-x:auto;font-size:12px}
   .bubble code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:12px}
   .bubble :not(pre)>code{background:#262c36;padding:1px 5px;border-radius:4px}
-  .bubble ul{margin:6px 0;padding-left:20px}
+  .bubble ul,.bubble ol{margin:6px 0;padding-left:22px}
+  .bubble table{border-collapse:collapse;margin:8px 0;font-size:13px}
+  .bubble th,.bubble td{border:1px solid var(--border);padding:4px 10px;text-align:left}
+  .bubble th{background:var(--panel2)}
+  .bubble blockquote{margin:6px 0;padding-left:10px;border-left:3px solid var(--border);color:var(--muted)}
+  .wake{margin-bottom:14px;max-width:920px;color:var(--muted);font-size:12px}
+  .wake summary{cursor:pointer;user-select:none}
+  .wake pre{white-space:pre-wrap;word-break:break-word;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;margin:6px 0 0}
+  .firstrun{max-width:560px;margin:24px auto;display:flex;flex-direction:column;gap:12px}
+  .firstrun h2{margin:0;font-size:18px}
+  .firstrun p{margin:0;color:var(--muted)}
+  .firstrun input{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:13px}
+  .firstrun label{color:var(--muted);font-size:12px}
+  .template{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel)}
+  .template .tdesc{flex:1;color:var(--muted);font-size:13px}
+  .template b{min-width:50px}
+  .template button{background:var(--accent);color:#04121f;border:none;border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer}
+  .template button:disabled{opacity:.5;cursor:default}
+  .firstrun .err{color:var(--red);font-size:12px;min-height:16px}
+  .unread{margin-left:auto;background:var(--accent);color:#04121f;border-radius:9px;padding:0 7px;font-size:11px;font-weight:600}
+  .chat .unread + .csess{margin-left:6px}
+  .agentrow{display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:6px;margin-bottom:6px}
+  .agentrow input,.agentrow select{min-width:0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 7px;font-size:12px}
+  .mbody button.plain{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;margin-right:6px}
+  .hit{padding:7px 10px;border:1px solid var(--border);border-radius:7px;margin-bottom:6px;cursor:pointer;font-size:12px;word-break:break-word}
+  .hit:hover{background:var(--panel2)}
+  .hit .hmeta{color:var(--muted);display:block;margin-bottom:2px}
+  .chat-header select{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:12px;max-width:220px}
   .bubble a{color:var(--accent)}
   .thinking{margin:6px 0;border:1px dashed #3a3f4a;border-radius:8px;background:#12161d}
   .thinking .th{cursor:pointer;color:var(--muted);font-size:12px;padding:6px 10px;user-select:none}
@@ -142,6 +169,7 @@
 </header>
 <div class="pausedbar" id="pausedBar" hidden><span id="pausedText"></span><button id="resumeBtn" hidden></button></div>
 <div id="questionBar"></div>
+<datalist id="modelList"></datalist>
 <div class="layout">
   <aside class="sidebar">
     <div class="side-title">Chats</div>
@@ -165,6 +193,7 @@
       <button data-tab="plugins">Plugins</button>
       <button data-tab="mcp">MCP</button>
       <button data-tab="usage">Usage</button>
+      <button data-tab="search">Search</button>
     </div>
     <div class="mbody" id="mbody"></div>
   </div>
@@ -185,29 +214,15 @@
   // the startup link carried the access token; the cookie has it now, so drop it from the address bar
   if (location.search) history.replaceState(null, "", location.pathname);
   // ---------- utilities ----------
-  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  /* markdown.cjs */
+  function esc(s) { return escapeHtml(s); }
   function time(ts) { var d = ts ? new Date(ts) : new Date(); return d.toTimeString().slice(0, 8); }
   function extractText(content) {
     if (typeof content === "string") return content;
     if (Array.isArray(content)) return content.map(function (b) { return (b && b.text) || ""; }).join("");
     return "";
   }
-  // minimal markdown -> html (code blocks, inline code, bold, italic, headings, links, lists)
-  function md(src) {
-    if (!src) return "";
-    var s = esc(src);
-    s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, function (_, lang, code) { return "<pre><code>" + code + "</code></pre>"; });
-    s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-    s = s.replace(/^### (.*)$/gm, "<h4>$1</h4>");
-    s = s.replace(/^## (.*)$/gm, "<h3>$1</h3>");
-    s = s.replace(/^# (.*)$/gm, "<h2>$1</h2>");
-    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    s = s.replace(/(^|\n)- (.*)/g, "$1<li>$2</li>");
-    s = s.replace(/\n/g, "<br>");
-    return s;
-  }
+  function md(src) { return renderMarkdown(src); }
   function jsonStr(o) { try { return JSON.stringify(o, null, 2); } catch (e) { return String(o); } }
 
   // ---------- state ----------
@@ -222,6 +237,12 @@
     questions: [],         // agents waiting for an answer
     maxCost: null,         // spending limit in dollars, if any
     routerStats: null,     // what the dedicated router has used
+    templates: [],         // crews for the first-run screen
+    defaultModel: "",      // the model new agents get, if set
+    models: [],            // every model pi knows, as provider/id
+    openBlocks: {},        // tool cards and details a person has opened, by key
+    drafts: {},            // unsent text per chat, kept across re-renders and reconnects
+    unread: {},            // new messages per chat since it was last open
     mcp: { mcpServers: {} },
     extensions: { available: [], selected: {} },
     settingsTab: "fleet"
@@ -237,7 +258,11 @@
     var c = getChannel(name);
     return m.kind === "chat" && !!c && c.members.indexOf(m.from) >= 0 && c.members.indexOf(m.to) >= 0;
   }
-  function channelMessages(name) { return state.group.filter(function (m) { return inChannel(m, name); }); }
+  function channelMessages(name) {
+    var c = getChannel(name);
+    var after = (c && c.clearedAt) || 0;
+    return state.group.filter(function (m) { return inChannel(m, name) && m.ts > after; });
+  }
 
   // ---------- conversation model ----------
   function getConv(name) { if (!state.conv[name]) state.conv[name] = { items: [], live: null }; return state.conv[name]; }
@@ -271,8 +296,9 @@
         else items.push({ type: "toolresult", id: m.toolCallId, name: m.toolName, text: extractText(m.content), isError: !!m.isError });
       }
     });
-    conv.items = items;
-    conv.live = null;
+    // what was sent while the history was on its way is newer than the history
+    var sent = conv.items.filter(function (it) { return it.type === "user" && it.text === conv.echo; });
+    conv.items = items.concat(sent);
   }
 
   // apply a live RPC event to an agent's conversation model
@@ -286,6 +312,12 @@
       if (ame.type === "text_delta" && ame.delta) conv.live.text += ame.delta;
       else if (ame.type === "thinking_delta" && ame.delta) conv.live.thinking += ame.delta;
       else if (ame.type === "toolcall_end" && ame.toolCall) conv.live.tools.push({ id: ame.toolCall.id, name: ame.toolCall.name, args: ame.toolCall.arguments, running: false });
+    }
+    else if (t === "message_end" && ev.message && ev.message.role === "user") {
+      var said = extractText(ev.message.content);
+      // what the composer already showed comes back here: it must not appear twice
+      if (conv.echo === said) conv.echo = null;
+      else conv.items.push({ type: "user", text: said, ts: ev.message.timestamp });
     }
     else if (t === "message_end" && ev.message && ev.message.role === "assistant") {
       var it = assistantItemFromMessage(ev.message);
@@ -359,6 +391,24 @@
     post("/answer", body).then(function (r) { if (!r.ok) alert("Could not answer: " + (r.error || "")); });
   }
 
+  function unreadBadge(key) { return state.unread[key] ? '<span class="unread">' + state.unread[key] + "</span>" : ""; }
+
+  function markUnread(key) {
+    state.unread[key] = (state.unread[key] || 0) + 1;
+    showUnreadTotal();
+    renderSidebar();
+  }
+
+  function showUnreadTotal() {
+    var total = Object.keys(state.unread).reduce(function (sum, k) { return sum + state.unread[k]; }, 0);
+    document.title = (total ? "(" + total + ") " : "") + "pi-fleet";
+  }
+
+  // only when the page cannot be seen: otherwise the bars at the top say the same
+  function notify(text) {
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification("pi-fleet", { body: text });
+  }
+
   function renderSidebar() {
     var html = '';
     html += '<div class="side-title">Channels</div>';
@@ -369,14 +419,14 @@
       var sel = c.name === "group" ? "group" : "#" + c.name;
       var busy = (c.members || []).some(function (m) { return state.agents[m] && state.agents[m].status === "busy"; });
       var dot = busy ? "busy" : "idle";
-      html += '<div class="chat' + (state.selected === sel ? " active" : "") + '" data-chat="' + esc(sel) + '"><span class="cdot ' + dot + '"></span><span class="cname"># ' + esc(c.name) + '</span><span class="csess">' + (c.members ? c.members.length : 0) + '</span></div>';
+      html += '<div class="chat' + (state.selected === sel ? " active" : "") + '" data-chat="' + esc(sel) + '"><span class="cdot ' + dot + '"></span><span class="cname"># ' + esc(c.name) + "</span>" + unreadBadge(sel) + '<span class="csess">' + (c.members ? c.members.length : 0) + '</span></div>';
     });
     html += '<div class="side-title">Direct</div>';
     agentNames().forEach(function (n) {
       var a = state.agents[n];
       var st = a.status || "stopped";
       var sess = a.sessionName ? esc(a.sessionName) : "";
-      html += '<div class="chat' + (state.selected === n ? " active" : "") + '" data-chat="' + esc(n) + '"><span class="cdot ' + esc(st) + '"></span><span class="cname">@ ' + esc(n) + '</span>' + (sess ? '<span class="csess">' + sess + '</span>' : "") + "</div>";
+      html += '<div class="chat' + (state.selected === n ? " active" : "") + '" data-chat="' + esc(n) + '"><span class="cdot ' + esc(st) + '"></span><span class="cname">@ ' + esc(n) + "</span>" + unreadBadge(n) + (sess ? '<span class="csess">' + sess + '</span>' : "") + "</div>";
     });
     chatListEl.innerHTML = html;
   }
@@ -404,13 +454,25 @@
     headerEl.innerHTML =
       '<span class="title">@ ' + esc(state.selected) + '</span>' +
       '<span class="badge ' + esc(st) + '">' + esc(st) + '</span>' +
-      '<span class="hmeta">' + model + sess + stats + '</span>' +
+      modelPicker(a) +
+      '<span class="hmeta">' + (state.models.length ? "" : model) + sess + stats + '</span>' +
       '<span class="hbtns">' +
-      '<button data-act="new-session" title="Start a fresh session">New session</button>' +
-      '<button data-act="rename">Name</button>' +
-      '<button data-act="compact" title="Compact context">Compact</button>' +
-      '<button data-act="abort" class="danger" title="Stop the current run">Stop</button>' +
+      (st === "stopped"
+        ? '<button data-act="restart" title="Start it again; it keeps its conversation">Start</button>'
+        : '<button data-act="new-session" title="Start a fresh session">New session</button>' +
+          '<button data-act="rename">Name</button>' +
+          '<button data-act="compact" title="Compact context">Compact</button>' +
+          '<button data-act="abort" class="danger" title="Abort the current run">Abort run</button>' +
+          '<button data-act="restart" title="Restart it; it keeps its conversation">Restart</button>' +
+          '<button data-act="stop-agent" class="danger" title="Stop this agent">Stop agent</button>') +
+      '<button data-act="remove" class="danger" title="Remove this agent from the fleet">Remove</button>' +
       "</span>";
+  }
+
+  function modelPicker(a) {
+    if (!state.models.length) return "";
+    var models = a.model && state.models.indexOf(a.model) < 0 ? [a.model].concat(state.models) : state.models;
+    return '<select id="modelPick" title="Model">' + models.map(function (m) { return '<option value="' + esc(m) + '"' + (m === a.model ? " selected" : "") + ">" + esc(m) + "</option>"; }).join("") + "</select>";
   }
 
   function fmtCost(stats) {
@@ -427,15 +489,21 @@
       : '<span class="tstatus ok">✓' + (tool.duration != null ? " " + tool.duration + "ms" : "") + "</span>";
     var args = tool.args != null ? '<div class="tsec"><div class="lbl">arguments</div><pre>' + esc(jsonStr(tool.args)) + "</pre></div>" : "";
     var res = (tool.result != null && tool.result !== "") ? '<div class="tsec' + (tool.isError ? " err" : "") + '"><div class="lbl">' + (tool.isError ? "error" : "result") + '</div><pre>' + esc(tool.result) + "</pre></div>" : "";
-    return '<div class="tool"><div class="thead"><span class="tname">⚙ ' + esc(tool.name) + "</span>" + status + '<span class="chev">▸</span></div>' +
+    var key = "tool:" + tool.id;
+    var open = state.openBlocks[key];
+    return '<div class="tool' + (open ? " open" : "") + '" data-key="' + esc(key) + '"><div class="thead"><span class="tname">⚙ ' + esc(tool.name) + "</span>" + status + '<span class="chev">' + (open ? "▾" : "▸") + "</span></div>" +
       "<div class=\"tbody\">" + args + res + "</div></div>";
   }
 
   function renderAssistantItem(item) {
     var html = '<div class="msg"><div class="who">assistant<span class="t">' + time(item.ts) + "</span></div><div class=\"bubble\">";
-    (item.blocks || []).forEach(function (b) {
+    (item.blocks || []).forEach(function (b, i) {
       if (b.type === "text" && b.text) html += "<div>" + md(b.text) + "</div>";
-      else if (b.type === "thinking" && b.text) html += '<div class="thinking"><div class="th">💭 thinking ▸</div><div class="tb">' + esc(b.text) + "</div></div>";
+      else if (b.type === "thinking" && b.text) {
+        var key = "think:" + item.ts + ":" + i;
+        var open = state.openBlocks[key];
+        html += '<div class="thinking' + (open ? " open" : "") + '" data-key="' + esc(key) + '"><div class="th">💭 thinking ' + (open ? "▾" : "▸") + '</div><div class="tb">' + esc(b.text) + "</div></div>";
+      }
       else if (b.type === "tool") html += renderToolBlock(b);
     });
     html += "</div></div>";
@@ -453,8 +521,20 @@
     return html;
   }
 
+  // what the fleet sends an agent arrives as a user message, but nobody typed it
+  function fleetPromptLabel(text) {
+    if (/^Routing task for /.test(text)) return "Routing task";
+    if (/^New fleet messages for you:/.test(text)) return "Message from the fleet";
+    if (/^You were restarted/.test(text)) return "Resuming after a restart";
+    return null;
+  }
+
   function renderConvItem(item) {
-    if (item.type === "user") return '<div class="msg user"><div class="bubble">' + esc(item.text) + "</div></div>";
+    if (item.type === "user") {
+      var label = fleetPromptLabel(item.text);
+      if (label) return '<details class="wake"><summary>' + esc(label) + "</summary><pre>" + esc(item.text) + "</pre></details>";
+      return '<div class="msg user"><div class="bubble">' + esc(item.text) + "</div></div>";
+    }
     if (item.type === "assistant") return renderAssistantItem(item);
     if (item.type === "toolresult") return '<div class="msg"><div class="who">tool result<span class="t">' + esc(item.name || "") + "</span></div><div class=\"bubble\"><pre style=\"margin:0\">" + esc(item.text) + "</pre></div></div>";
     return "";
@@ -466,13 +546,25 @@
     if (m.kind === "activity") return '<div class="msg system">' + esc(m.from) + " " + esc(m.text) + "</div>";
     var target = m.to === "group" || getChannel(m.to) ? "" : (" → @" + esc(m.to));
     var reply = m.replyTo ? ' <span class="hmeta">↪ reply</span>' : "";
-    return '<div class="msg ' + whoCls + '"><div class="who">' + esc(m.from) + target + '<span class="t">' + time(m.ts) + "</span>" + reply + '</div><div class="bubble">' + esc(m.text) + "</div></div>";
+    return '<div class="msg ' + whoCls + '"><div class="who">' + esc(m.from) + target + '<span class="t">' + time(m.ts) + "</span>" + reply + '</div><div class="bubble">' + md(m.text) + "</div></div>";
+  }
+
+  function renderFirstRun() {
+    var html = '<div class="firstrun"><h2>Start your fleet</h2><p>Pick a crew. They start in this project\'s folder, and you can change them later in Settings.</p>';
+    html += '<label for="firstModel">Model</label><input id="firstModel" list="modelList" placeholder="provider/model" value="' + esc(state.defaultModel) + '">';
+    state.templates.forEach(function (t) {
+      html += '<div class="template"><b>' + esc(t.name) + '</b><span class="tdesc">' + esc(t.description) + '</span><button data-template="' + esc(t.name) + '">Start</button></div>';
+    });
+    return html + '<div class="err" id="firstError"></div></div>';
   }
 
   function renderConversation() {
     var wasAtBottom = convEl.scrollHeight - convEl.scrollTop - convEl.clientHeight < 60;
+    var scrollTop = convEl.scrollTop;
     var html = "";
-    if (isChannelSel(state.selected)) {
+    if (!agentNames().length && state.templates.length) {
+      html = renderFirstRun();
+    } else if (isChannelSel(state.selected)) {
       var msgs = channelMessages(channelNameOf(state.selected));
       if (!msgs.length) html = '<div class="empty">No messages in this channel yet — say hello.</div>';
       else msgs.forEach(function (m) { html += renderGroupMessage(m); });
@@ -485,10 +577,25 @@
       }
     }
     convEl.innerHTML = html;
-    if (wasAtBottom) convEl.scrollTop = convEl.scrollHeight;
-    // wire up collapsibles
-    convEl.querySelectorAll(".tool .thead").forEach(function (h) { h.onclick = function () { h.parentElement.classList.toggle("open"); h.querySelector(".chev").textContent = h.parentElement.classList.contains("open") ? "▾" : "▸"; }; });
-    convEl.querySelectorAll(".thinking .th").forEach(function (h) { h.onclick = function () { h.parentElement.classList.toggle("open"); h.textContent = h.textContent.replace(/▸|▾/, h.parentElement.classList.contains("open") ? "▾" : "▸"); }; });
+    convEl.scrollTop = wasAtBottom ? convEl.scrollHeight : scrollTop;
+  }
+
+  function conversationClicked(e) {
+    var head = e.target.closest(".tool .thead, .thinking .th");
+    if (head && head.parentElement.hasAttribute("data-key")) {
+      var key = head.parentElement.getAttribute("data-key");
+      state.openBlocks[key] = !state.openBlocks[key];
+      renderConversation();
+      return;
+    }
+    var start = e.target.closest("button[data-template]");
+    if (!start) return;
+    start.disabled = true;
+    post("/start-template", { template: start.getAttribute("data-template"), model: document.getElementById("firstModel").value.trim() }).then(function (r) {
+      start.disabled = false;
+      var err = document.getElementById("firstError");
+      if (!r.ok && err) err.textContent = r.error || "Could not start the fleet";
+    });
   }
 
   function renderComposer() {
@@ -507,9 +614,12 @@
     }
     var input = document.getElementById("msgInput");
     var sendBtn = document.getElementById("sendBtn");
+    var chat = state.selected;
+    input.value = state.drafts[chat] || "";
+    input.addEventListener("input", function () { state.drafts[chat] = input.value; });
     sendBtn.onclick = send;
     input.addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
-    input.focus();
+    if (!dialogEl.classList.contains("show") && !overlayEl.classList.contains("show")) input.focus();
   }
 
   function renderAll() { renderSidebar(); renderHeader(); renderConversation(); renderComposer(); }
@@ -517,23 +627,19 @@
   function renderSettings() {
     var tab = state.settingsTab;
     if (tab === "fleet") {
-      var h = "<h3>Fleet</h3>";
-      var names = agentNames();
-      if (!names.length) h += '<div class="stat">No agents running.</div>';
-      names.forEach(function (n) {
-        var a = state.agents[n];
-        h += '<div class="mrow"><span class="nm">@ ' + esc(n) + '</span><span class="desc">' + esc(a.model || "") + (a.role ? " · " + esc(a.role) : "") + '</span><span class="stat">' + esc(a.status || "") + "</span></div>";
-      });
-      h += '<div class="stat" style="margin-top:10px">Agents are defined in <code>fleet.json</code> or via <code>--agent</code> / templates. Use “New chat” to add one at runtime.</div>';
-      mbodyEl.innerHTML = h;
+      renderFleetTab();
+    } else if (tab === "search") {
+      mbodyEl.innerHTML = '<h3>Search history</h3><div class="field"><input id="searchInput" placeholder="Search every message, including archived ones"></div><div id="searchHits"></div>';
+      var searchInput = document.getElementById("searchInput");
+      searchInput.focus();
+      searchInput.addEventListener("keydown", function (e) { if (e.key === "Enter") runSearch(searchInput.value.trim()); });
     } else if (tab === "channels") {
       var h = "<h3>Channels</h3>";
       h += '<div class="stat" style="margin-bottom:10px">A channel is a named group chat. Each message goes to the members who should act, chosen by the router or by a supervisor agent you name. The default <code>#group</code> is always present and is managed by the fleet.</div>';
       state.channels.slice().forEach(function (c) {
-        if (c.name === "group") return;
         var sup = c.supervisor ? "@" + c.supervisor : "the router";
         h += '<div class="mrow"><span class="nm"># ' + esc(c.name) + '</span><span class="desc">routed by ' + esc(sup) + " · " + (c.members || []).map(function (m) { return esc(m); }).join(", ") + '</span>';
-        h += '<button data-chedit="' + esc(c.name) + '">Edit</button><button class="del" data-chdel="' + esc(c.name) + '">Remove</button></div>';
+        h += '<button data-chedit="' + esc(c.name) + '">Edit</button>' + (c.name === "group" ? "" : '<button class="del" data-chdel="' + esc(c.name) + '">Remove</button>') + "</div>";
         if (c.summary) h += '<div class="stat" style="margin:0 0 8px 12px">Summary: ' + esc(c.summary) + '</div>';
       });
       h += '<h3 style="margin-top:16px">Create channel</h3>';
@@ -541,7 +647,7 @@
       h += '<div class="field"><label>Members (pick agents)</label>';
       agentNames().forEach(function (n) { h += '<label class="chk"><input type="checkbox" class="chMember" value="' + esc(n) + '"><span>@ ' + esc(n) + '</span></label>'; });
       h += '</div>';
-      h += '<div class="field"><label>Supervisor agent (optional: leave empty for the router)</label><input id="chSup" placeholder="leave empty for the router"></div>';
+      h += '<div class="field"><label>Routed by</label><select id="chSup"><option value="">the router</option>' + agentNames().map(function (n) { return '<option value="' + esc(n) + '">@ ' + esc(n) + "</option>"; }).join("") + "</select></div>";
       h += '<button id="chAdd" style="margin-top:6px">Add channel</button>';
       mbodyEl.innerHTML = h;
       var addBtn = document.getElementById("chAdd");
@@ -552,7 +658,7 @@
         mbodyEl.querySelectorAll(".chMember:checked").forEach(function (cb) { members.push(cb.value); });
         if (!members.length) { alert("Pick at least one member"); return; }
         var sup = (document.getElementById("chSup") || {}).value.trim() || null;
-        post("/channels", { name: name, members: members, supervisor: sup }).then(function (r) {
+        post("/channels", { name: name, members: members, supervisor: sup || undefined, pinned: true }).then(function (r) {
           if (r.ok) { state.channels = state.channels.filter(function (c) { return c.name !== name; }); state.channels.push({ name: name, members: members, supervisor: sup }); renderSettings(); renderSidebar(); }
           else alert("Could not create channel: " + (r.error || ""));
         });
@@ -624,9 +730,66 @@
       };
     }
   }
+  var ROLES = ["", "planner", "implementer", "reviewer", "supervisor"];
+
+  function agentRow(a) {
+    return '<div class="agentrow">' +
+      '<input data-f="name" placeholder="name" value="' + esc(a.name || "") + '">' +
+      '<input data-f="cwd" placeholder="folder" value="' + esc(a.cwd || "") + '">' +
+      '<input data-f="model" list="modelList" placeholder="model" value="' + esc(a.model || "") + '">' +
+      '<select data-f="role">' + ROLES.map(function (r) { return '<option value="' + r + '"' + (r === (a.role || "") ? " selected" : "") + ">" + (r || "(no role)") + "</option>"; }).join("") + "</select>" +
+      '<button class="plain" data-del="1">×</button></div>';
+  }
+
+  // the file on disk is the source of truth, so the form is always loaded fresh
+  function renderFleetTab() {
+    get("/config").then(function (r) {
+      if (state.settingsTab !== "fleet") return;
+      var c = r.result || { agents: [] };
+      mbodyEl.innerHTML = '<h3>Fleet</h3><div class="stat" style="margin-bottom:10px">Saved to <code>fleet.json</code>. Takes effect the next time the fleet starts; running agents stay as they are.</div>' +
+        '<div class="row2"><div class="field"><label>Default model</label><input id="cfgDefaultModel" list="modelList" value="' + esc(c.defaultModel || "") + '"></div>' +
+        '<div class="field"><label>Router model (a cheap one is enough)</label><input id="cfgRouterModel" list="modelList" value="' + esc(c.routerModel || "") + '"></div>' +
+        '<div class="field"><label>Turns per run (empty: 100, 0: no limit)</label><input id="cfgMaxTurns" value="' + esc(c.maxTurns == null ? "" : c.maxTurns) + '"></div>' +
+        '<div class="field"><label>Agent messages per human message (empty: 40, 0: no limit)</label><input id="cfgMaxHops" value="' + esc(c.maxHops == null ? "" : c.maxHops) + '"></div></div>' +
+        '<h3>Agents</h3><div id="cfgAgents">' + (c.agents || []).map(agentRow).join("") + "</div>" +
+        '<button class="plain" id="cfgAdd">Add agent</button><button class="plain" id="cfgSave">Save</button><div class="stat" id="cfgStatus" style="margin-top:8px"></div>';
+      document.getElementById("cfgAdd").onclick = function () { document.getElementById("cfgAgents").insertAdjacentHTML("beforeend", agentRow({})); };
+      document.getElementById("cfgAgents").addEventListener("click", function (e) { if (e.target.hasAttribute("data-del")) e.target.parentElement.remove(); });
+      document.getElementById("cfgSave").onclick = saveFleetConfig;
+    });
+  }
+
+  function saveFleetConfig() {
+    var value = function (id) { return document.getElementById(id).value.trim(); };
+    var number = function (id) { var v = value(id); return v === "" ? undefined : Number(v); };
+    var agents = [].map.call(document.querySelectorAll("#cfgAgents .agentrow"), function (row) {
+      var a = {};
+      row.querySelectorAll("[data-f]").forEach(function (f) { if (f.value.trim()) a[f.getAttribute("data-f")] = f.value.trim(); });
+      return a;
+    });
+    post("/config", { defaultModel: value("cfgDefaultModel") || undefined, routerModel: value("cfgRouterModel") || undefined, maxTurns: number("cfgMaxTurns"), maxHops: number("cfgMaxHops"), maxCost: state.maxCost || undefined, agents: agents }).then(function (r) {
+      document.getElementById("cfgStatus").textContent = r.ok ? "Saved." : "Not saved: " + r.error;
+    });
+  }
+
+  function runSearch(query) {
+    if (!query) return;
+    get("/search?q=" + encodeURIComponent(query)).then(function (r) {
+      var hits = r.result || [];
+      document.getElementById("searchHits").innerHTML = hits.length ? hits.map(function (m) {
+        return '<div class="hit" data-to="' + esc(m.to) + '"><span class="hmeta">' + esc(m.from) + " → " + esc(m.to) + " · " + new Date(m.ts).toLocaleString() + "</span>" + esc(m.text.slice(0, 240)) + "</div>";
+      }).join("") : '<div class="stat">No matches.</div>';
+    });
+  }
+
   // ---------- actions ----------
   function post(url, body) {
     return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .catch(function (e) { return { ok: false, error: String(e) }; });
+  }
+  function get(url) {
+    return fetch(url)
       .then(function (r) { return r.json(); })
       .catch(function (e) { return { ok: false, error: String(e) }; });
   }
@@ -639,12 +802,18 @@
     if (!input) return;
     var text = input.value.trim();
     if (!text) return;
+    if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+    state.drafts[state.selected] = "";
     if (isChannelSel(state.selected)) {
       var to = (document.getElementById("toSel") || {}).value || "group";
       var target = to.indexOf("#") === 0 ? to.slice(1) : to; // "#dev" -> "dev"; "group"/"alice" unchanged
       post("/message", { to: target, text: text }).then(function (r) { if (!r.ok) sendFailed(text, r.error); });
     } else {
       // followUp queues the message if the agent is mid-turn (e.g. polling its inbox)
+      var conv = getConv(state.selected);
+      conv.items.push({ type: "user", text: text, ts: Date.now() });
+      conv.echo = text;
+      renderConversation();
       rpc(state.selected, "prompt", { message: text, streamingBehavior: "followUp" }).then(function (r) {
         var refused = r.ok && r.result && r.result.success === false;
         if (!r.ok || refused) sendFailed(text, refused ? r.result.error : r.error);
@@ -656,13 +825,15 @@
   // nothing the user typed is lost: the text goes back in the box, with the reason under it
   function sendFailed(text, reason) {
     var input = document.getElementById("msgInput");
-    if (input && !input.value) input.value = text;
+    if (input && !input.value) { input.value = text; state.drafts[state.selected] = text; }
     var hint = composerEl.querySelector(".hint");
     if (hint) { hint.textContent = "Not sent: " + (reason || "request failed"); hint.classList.add("err"); }
   }
 
   function selectChat(name) {
     state.selected = name;
+    delete state.unread[name];
+    showUnreadTotal();
     if (!isChannelSel(name)) {
       // agent: seed the conversation from the agent's session if not already loaded
       if (!state.conv[name] || !state.conv[name].items.length) {
@@ -688,7 +859,7 @@
   function fieldHtml(f) {
     var control = f.options
       ? '<select name="' + esc(f.name) + '">' + f.options.map(function (o) { return '<option value="' + esc(o) + '">' + esc(o || "(none)") + "</option>"; }).join("") + "</select>"
-      : '<input name="' + esc(f.name) + '" value="' + esc(f.value || "") + '" placeholder="' + esc(f.placeholder || "") + '"' +
+      : '<input name="' + esc(f.name) + '" value="' + esc(f.value || "") + '" placeholder="' + esc(f.placeholder || "") + '"' + (f.list ? ' list="' + esc(f.list) + '"' : "") +
         (f.required ? " required" : "") + (f.pattern ? ' pattern="' + esc(f.pattern) + '" title="' + esc(f.hint || "") + '"' : "") + ">";
     return '<div class="field"><label>' + esc(f.label) + "</label>" + control + "</div>";
   }
@@ -702,7 +873,7 @@
     dialogErrorEl.textContent = "";
     dialogFieldsEl.innerHTML = opts.fields.map(fieldHtml).join("");
     dialogEl.classList.add("show");
-    var first = dialogFieldsEl.querySelector("input,select");
+    var first = dialogFieldsEl.querySelector("input,select") || dialogSubmitBtn;
     first.focus();
     if (first.select) first.select();
   }
@@ -715,7 +886,7 @@
       fields: [
         { name: "name", label: "Name", value: "agent-" + (agentNames().length + 1), required: true, pattern: "[A-Za-z0-9_\\-]{1,64}", hint: "Letters, digits, _ and -" },
         { name: "cwd", label: "Working directory (empty: the fleet root)" },
-        { name: "model", label: "Model (empty: the default)", placeholder: "provider/model" },
+        { name: "model", label: "Model (empty: the default)", placeholder: "provider/model", list: "modelList" },
         { name: "role", label: "Role", options: ["", "planner", "implementer", "reviewer", "supervisor"] }
       ],
       submit: function (v) {
@@ -740,14 +911,28 @@
   function headerAction(act) {
     var name = state.selected;
     if (isChannelSel(name)) {
-      if (act === "clear-channel") { var cn = channelNameOf(name); state.group = state.group.filter(function (m) { return m.to !== cn; }); renderConversation(); }
+      if (act === "clear-channel") post("/channels/clear", { name: channelNameOf(name) });
       else if (act === "manage-channel") { state.settingsTab = "channels"; syncTabs(); renderSettings(); overlayEl.classList.add("show"); }
       return;
     }
-    if (act === "new-session") rpc(name, "new_session").then(function () { state.conv[name] = { items: [], live: null }; renderConversation(); });
+    if (act === "restart") post("/agents/restart", { name: name }).then(reportFailure);
+    else if (act === "stop-agent") post("/agents/stop", { name: name }).then(reportFailure);
+    else if (act === "remove") confirmRemove(name);
+    else if (act === "new-session") rpc(name, "new_session").then(function () { state.conv[name] = { items: [], live: null }; renderConversation(); });
     else if (act === "rename") renameSession(name);
     else if (act === "compact") rpc(name, "compact");
     else if (act === "abort") rpc(name, "abort");
+  }
+
+  function reportFailure(r) { if (!r.ok) alert(r.error || "Request failed"); }
+
+  function confirmRemove(name) {
+    openDialog({
+      title: "Remove " + name + "?",
+      action: "Remove agent",
+      fields: [],
+      submit: function () { return post("/agents/remove", { name: name }); }
+    });
   }
 
   function mcpAdd() {
@@ -778,6 +963,15 @@
     else if (!scheduleConvRender._t) scheduleConvRender._t = setTimeout(function () { scheduleConvRender._t = null; lastConvRender = Date.now(); renderConversation(); }, 80);
   }
 
+  function loadModels() {
+    get("/models").then(function (r) {
+      if (!r.ok) return;
+      state.models = r.result || [];
+      document.getElementById("modelList").innerHTML = state.models.map(function (m) { return '<option value="' + esc(m) + '">'; }).join("");
+      renderHeader();
+    });
+  }
+
   function onSnapshot(snap) {
     state.agents = {};
     (snap.agents || []).forEach(function (a) { state.agents[a.name] = { info: a, status: a.status, model: a.model, role: a.role, sessionName: a.sessionName, stats: (snap.stats || {})[a.name] || null }; });
@@ -790,6 +984,8 @@
       state.selected = "group";
     }
     metaEl.textContent = agentNames().length + " agent(s)";
+    state.templates = snap.templates || [];
+    state.defaultModel = snap.defaultModel || "";
     state.routerStats = (snap.stats || {}).router || null;
     state.paused = snap.paused || null;
     state.held = snap.held || 0;
@@ -798,6 +994,7 @@
     renderPaused();
     renderQuestions();
     renderAll();
+    if (!state.models.length) loadModels();
     // refresh mcp + extensions
     fetch("/mcp").then(function (r) { return r.json(); }).then(function (m) { state.mcp = m; }).catch(function () {});
     fetch("/extensions").then(function (r) { return r.json(); }).then(function (e) { state.extensions = e; }).catch(function () {});
@@ -812,10 +1009,13 @@
     state.group.push(m);
     if (state.group.length > 300) state.group = state.group.slice(-300);
     if (isChannelSel(state.selected) && inChannel(m, channelNameOf(state.selected))) renderConversation();
+    var key = m.to === "group" ? "group" : getChannel(m.to) ? "#" + m.to : null;
+    if (key && key !== state.selected && m.kind === "chat") markUnread(key);
   });
   es.addEventListener("agent_event", function (e) {
     var d = JSON.parse(e.data);
     applyEvent(d.name, d.event);
+    if (state.selected !== d.name && d.event.type === "message_end" && d.event.message && d.event.message.role === "assistant") markUnread(d.name);
     if (state.selected === d.name) {
       var isDelta = d.event.type === "message_update";
       scheduleConvRender(!isDelta);
@@ -825,8 +1025,27 @@
     var s = JSON.parse(e.data);
     if (state.agents[s.name]) { state.agents[s.name].status = s.status; renderSidebar(); if (state.selected === s.name) renderHeader(); }
   });
-  es.addEventListener("paused", function (e) { var p = JSON.parse(e.data); state.paused = p.reason; state.held = p.held || 0; renderPaused(); });
-  es.addEventListener("question", function (e) { state.questions.push(JSON.parse(e.data)); renderQuestions(); });
+  es.addEventListener("paused", function (e) {
+    var p = JSON.parse(e.data);
+    if (p.reason && !state.paused) notify("Fleet paused: " + p.reason);
+    state.paused = p.reason;
+    state.held = p.held || 0;
+    renderPaused();
+  });
+  es.addEventListener("agent_removed", function (e) {
+    var name = JSON.parse(e.data).name;
+    delete state.agents[name];
+    delete state.unread[name];
+    if (state.selected === name) state.selected = "group";
+    metaEl.textContent = agentNames().length + " agent(s)";
+    renderAll();
+  });
+  es.addEventListener("question", function (e) {
+    var q = JSON.parse(e.data);
+    state.questions.push(q);
+    renderQuestions();
+    notify("@" + q.agent + " is waiting for you: " + q.title);
+  });
   es.addEventListener("question_gone", function (e) { var id = JSON.parse(e.data).id; state.questions = state.questions.filter(function (q) { return q.id !== id; }); renderQuestions(); });
   es.addEventListener("stats", function (e) {
     var s = JSON.parse(e.data);
@@ -842,7 +1061,8 @@
     if (toSel && !state.agents[a.name]) toSel.add(new Option("@ " + a.name, a.name));
     state.agents[a.name] = { info: a, status: a.status, model: a.model, role: a.role, sessionName: a.sessionName, stats: null };
     metaEl.textContent = agentNames().length + " agent(s)";
-    renderSidebar();
+    if (agentNames().length === 1) renderAll(); // the first agent: the first-run screen gives way
+    else renderSidebar();
     if (state.selected === a.name) renderHeader();
   });
   es.addEventListener("session_name", function (e) {
@@ -853,7 +1073,7 @@
     state.channels = JSON.parse(e.data);
     if (!state.channels.some(function (c) { return c.name === "group"; })) state.channels.unshift({ name: "group", members: agentNames(), supervisor: null });
     renderSidebar();
-    if (isChannelSel(state.selected)) renderHeader();
+    if (isChannelSel(state.selected)) { renderHeader(); renderConversation(); }
   });
   es.addEventListener("extensions", function (e) { var s = JSON.parse(e.data); state.extensions.selected[s.agent] = s.extensions; });
   es.addEventListener("mcp", function (e) { state.mcp = JSON.parse(e.data); });
@@ -865,6 +1085,24 @@
   });
   document.getElementById("newChatBtn").onclick = newChat;
   document.getElementById("questionBar").addEventListener("click", answerClicked);
+  convEl.addEventListener("click", conversationClicked);
+  headerEl.addEventListener("change", function (e) {
+    if (e.target.id !== "modelPick") return;
+    var name = state.selected;
+    var slash = e.target.value.indexOf("/");
+    rpc(name, "set_model", { provider: e.target.value.slice(0, slash), modelId: e.target.value.slice(slash + 1) }).then(function (r) {
+      if (r.ok && (!r.result || r.result.success !== false)) state.agents[name].model = e.target.value;
+      else reportFailure({ error: (r.result && r.result.error) || r.error });
+      renderHeader();
+    });
+  });
+  mbodyEl.addEventListener("click", function (e) {
+    var hit = e.target.closest(".hit");
+    if (!hit) return;
+    var to = hit.getAttribute("data-to");
+    overlayEl.classList.remove("show");
+    selectChat(to === "group" ? "group" : getChannel(to) ? "#" + to : to);
+  });
   document.getElementById("resumeBtn").onclick = function () { post("/resume", {}); };
   var stopAllBtn = document.getElementById("stopAllBtn");
   stopAllBtn.onclick = function () {

@@ -21,6 +21,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { isValidAgentName } from "./spec.ts";
 
 export interface FleetAgentConfig {
   name: string;
@@ -65,21 +66,28 @@ export function isBudget(n: unknown): n is number {
 export function loadFleetConfig(hubDir: string): FleetConfig | null {
   const p = configPath(hubDir);
   if (!fs.existsSync(p)) return null;
-  let raw: Partial<FleetConfig>;
+  let raw: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<FleetConfig>;
+    raw = JSON.parse(fs.readFileSync(p, "utf8"));
   } catch (e) {
     throw new Error(`invalid fleet config ${p}: ${(e as Error).message}`);
   }
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`invalid fleet config ${p}: expected an object`);
-  if (raw.agents !== undefined && !Array.isArray(raw.agents)) throw new Error(`invalid fleet config ${p}: "agents" must be a list`);
+  return checkFleetConfig(raw, `fleet config ${p}`);
+}
+
+/** Validate a config from a file or the GUI. Throws, naming what is wrong and where it came from. */
+export function checkFleetConfig(input: unknown, source: string): FleetConfig {
+  const raw = input as Partial<FleetConfig>;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`invalid ${source}: expected an object`);
+  if (raw.agents !== undefined && !Array.isArray(raw.agents)) throw new Error(`invalid ${source}: "agents" must be a list`);
   for (const a of raw.agents ?? []) {
-    if (!a || typeof a.name !== "string") throw new Error(`invalid fleet config ${p}: every agent needs a "name"`);
+    if (!a || typeof a.name !== "string") throw new Error(`invalid ${source}: every agent needs a "name"`);
+    if (!isValidAgentName(a.name)) throw new Error(`invalid ${source}: "${a.name}" is not a valid agent name`);
   }
   for (const field of ["maxTurns", "maxHops"] as const) {
-    if (raw[field] !== undefined && !isLimit(raw[field])) throw new Error(`invalid fleet config ${p}: "${field}" must be a whole number (0 means no limit)`);
+    if (raw[field] !== undefined && !isLimit(raw[field])) throw new Error(`invalid ${source}: "${field}" must be a whole number (0 means no limit)`);
   }
-  if (raw.maxCost !== undefined && !isBudget(raw.maxCost)) throw new Error(`invalid fleet config ${p}: "maxCost" must be a positive number of dollars`);
+  if (raw.maxCost !== undefined && !isBudget(raw.maxCost)) throw new Error(`invalid ${source}: "maxCost" must be a positive number of dollars`);
   return {
     defaultModel: raw.defaultModel,
     maxTurns: raw.maxTurns,

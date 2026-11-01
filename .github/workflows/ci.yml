@@ -23,4 +23,5 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       - run: npm run typecheck
-      - run: npm test
+      # two test files at a time: real agents and a browser are heavy for a small runner
+      - run: npm test -- --maxWorkers=2

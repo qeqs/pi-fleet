@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadFleetConfig, configPath, isLimit } from "../src/config.ts";
+import { loadFleetConfig, configPath, isLimit, checkFleetConfig } from "../src/config.ts";
 
 let dir: string;
 
@@ -47,6 +47,16 @@ describe("fleet.json budget and approvals", () => {
   it("refuses a budget that is not a positive number", () => {
     write({ maxCost: 0, agents: [] });
     expect(() => loadFleetConfig(dir)).toThrow(/"maxCost" must be a positive number/);
+  });
+});
+
+describe("checkFleetConfig", () => {
+  it("accepts what the GUI sends", () => {
+    expect(checkFleetConfig({ defaultModel: "a/b", maxTurns: 10, agents: [{ name: "x", role: "planner" }] }, "form")).toMatchObject({ maxTurns: 10 });
+  });
+
+  it("refuses a bad agent name, saying where it came from", () => {
+    expect(() => checkFleetConfig({ agents: [{ name: "not ok" }] }, "fleet config")).toThrow('invalid fleet config: "not ok" is not a valid agent name');
   });
 });
 

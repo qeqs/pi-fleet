@@ -8,6 +8,8 @@
 //   [[router-garbage]]     -> as the router, answers with no JSON
 //   [[ask]]                -> calls ask_human (from test/ask-extension.ts)
 //   [[guarded]]            -> calls fleet_agents, for testing approvals
+//   [[md]]                 -> answers with markdown, some of it hostile
+//   [[tool-then-slow]]     -> calls a tool, then streams slowly
 //   [[hang]]               -> never answers
 //   [[fail]]               -> answers with an error that pi does not retry
 //   [[runon]]              -> never ends the run: every turn calls another tool
@@ -42,6 +44,27 @@ function routerReply(text) {
   return JSON.stringify({ respond, summary: `latest from ${from}` });
 }
 
+const MARKDOWN = [
+  "# Report",
+  "",
+  "| col a | col b |",
+  "|---|---|",
+  "| 1 | 2 |",
+  "",
+  "1. first",
+  "2. second",
+  "",
+  "```",
+  "- not a list item",
+  "<script>window.__xss = 1</script>",
+  "```",
+  "",
+  `[hover](x" onmouseover="window.__xss=2" y=")`,
+  "[click](javascript:window.__xss=3)",
+  "[good](https://example.com/page)",
+  "<img src=x onerror=window.__xss=4>",
+].join("\n");
+
 const say = (text) => ({ kind: "text", text });
 const tool = (name, args) => ({ kind: "tool", name, args });
 
@@ -50,6 +73,7 @@ function decide(agent, messages) {
   if (agent === "router") return say(routerReply(textOf(last)));
   const lastUser = textOf([...messages].reverse().find((m) => m.role === "user"));
   if (lastUser.includes("[[runon]]")) return tool("fleet_agents", {});
+  if (lastUser.includes("[[tool-then-slow]]")) return last.role === "tool" ? { kind: "slow", seconds: 4 } : tool("fleet_agents", {});
   if (lastUser.includes("[[repeat]]")) return tool("fleet_send", { to: "group", text: "Already done." });
   if (last.role === "tool") return say(`ok (${agent})`);
   const user = textOf(last);
@@ -63,6 +87,7 @@ function decide(agent, messages) {
     const respond = explicit ? explicit.split(",") : from === "user" ? ["planner"] : [];
     return tool("route", { channel: routing[1], respond, summary: `latest from ${from}` });
   }
+  if (user.includes("[[md]]")) return say(MARKDOWN);
   if (user.includes("[[ask]]")) return tool("ask_human", {});
   if (user.includes("[[guarded]]")) return tool("fleet_agents", {});
   if (user.includes("[[hang]]")) return { kind: "hang" };

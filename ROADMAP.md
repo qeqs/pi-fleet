@@ -95,18 +95,18 @@ messages wait while it works.
 
 ## 5. A GUI for daily use
 
-- [ ] Browser tests for the GUI, which today has only static checks
-- [ ] A sanitising Markdown renderer: tables, ordered lists and code blocks all work
-- [ ] Your own messages appear at once; multi-line channel messages keep their line breaks
-- [ ] Routing prompts are collapsed, not shown as if you had typed them
-- [ ] Tool cards, scroll position and drafts survive streaming and reconnects
-- [ ] Stop, Restart and Remove for each agent
-- [ ] Model picker from `get_available_models`
-- [ ] An editable Fleet tab that saves to `fleet.json`, including the channel supervisor
-- [ ] A first-run screen with a template picker
-- [ ] Unread badges and notifications
-- [ ] History search, including archived messages
-- [ ] Clear means something consistent: today it only hides messages until the next reload
+- [x] Browser tests for the GUI, which today has only static checks
+- [x] A sanitising Markdown renderer: tables, ordered lists and code blocks all work
+- [x] Your own messages appear at once; multi-line channel messages keep their line breaks
+- [x] Routing prompts are collapsed, not shown as if you had typed them
+- [x] Tool cards, scroll position and drafts survive streaming and reconnects
+- [x] Stop, Restart and Remove for each agent
+- [x] Model picker from `get_available_models`
+- [x] An editable Fleet tab that saves to `fleet.json`, including the channel supervisor
+- [x] A first-run screen with a template picker
+- [x] Unread badges and notifications
+- [x] History search, including archived messages
+- [x] Clear means something consistent: it hides messages for everyone, and they stay searchable
 
 **Done when:** a new user can go from an empty app to a finished sdlc task without a terminal or a config file, covered by a browser test.
 

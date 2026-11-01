@@ -1,6 +1,6 @@
 {
   "name": "pi-fleet",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Multi-agent fleet for pi: named concurrent agent sessions, group chat, inter-agent messaging, OpenSpec coordination",
@@ -19,6 +19,7 @@
   },
   "devDependencies": {
     "electron": "^45.1.0",
+    "playwright-core": "^1.64.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^5.0.5"

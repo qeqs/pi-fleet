@@ -270,6 +270,12 @@ describe("gui.html", () => {
     expect(html).not.toMatch(/<[^>]+\son[a-z]+="/);
   });
 
+  it("has its renderer inlined, so the page needs nothing else", async () => {
+    const page = await get("/");
+    expect(page.body).toContain("function renderMarkdown");
+    expect(page.body).not.toContain("markdown.cjs */");
+  });
+
   it("does not use window.prompt, which the desktop shell does not support", () => {
     expect(html).not.toMatch(/[^.\w]prompt\(/);
   });

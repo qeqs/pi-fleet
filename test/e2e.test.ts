@@ -4,60 +4,19 @@
  * unit tests cannot see: whether a message actually travels through the fleet.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { Hub, isPidAlive } from "../src/hub.ts";
 import { bridgeListening } from "../src/rpc.ts";
+import { FLEET, MODEL, ROOT, TSX, firstMatch, killTree, startFakeModel, until, type LlmRequest } from "./support.ts";
 
-const ROOT = path.resolve(__dirname, "..");
-const TSX = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
-const FLEET = path.join(ROOT, "src", "fleet.ts");
-const MODEL = "fake/fake-1";
-
-interface LlmRequest {
-  agent: string;
-  last: string;
-  conversation: string;
-  decision: string;
-}
-
-// a space in the path, because that is what command-line handling breaks on
 let tmp: string;
 let llm: ChildProcess;
-let llmPort: number;
+let llmLog: () => Promise<LlmRequest[]>;
 let env: NodeJS.ProcessEnv;
 
 const running: { proc: ChildProcess; hubDir: string }[] = [];
-
-function firstMatch(proc: ChildProcess, re: RegExp): Promise<RegExpExecArray> {
-  return new Promise((resolve, reject) => {
-    let out = "";
-    const timer = setTimeout(() => reject(new Error(`no ${re} in:\n${out}`)), 30000);
-    proc.stdout!.on("data", (d) => {
-      out += d;
-      const m = re.exec(out);
-      if (m) {
-        clearTimeout(timer);
-        resolve(m);
-      }
-    });
-    proc.stderr?.on("data", (d) => (out += d));
-  });
-}
-
-async function until<T>(what: string, check: () => T | Promise<T>, timeoutMs = 30000): Promise<NonNullable<T>> {
-  const end = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await check();
-    if (value) return value;
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((r) => setTimeout(r, 150));
-  }
-}
-
-const llmLog = async (): Promise<LlmRequest[]> => (await fetch(`http://127.0.0.1:${llmPort}/__log`)).json() as Promise<LlmRequest[]>;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -123,46 +82,11 @@ async function idle(hub: Hub, names: string[]): Promise<void> {
   });
 }
 
-function killTree(pid: number | undefined): void {
-  if (!pid) return;
-  try {
-    if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
-    else process.kill(pid, "SIGTERM");
-  } catch {
-    // already gone
-  }
-}
-
 beforeAll(async () => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi fleet e2e "));
-  llm = spawn(process.execPath, [path.join(ROOT, "test", "fake-llm.mjs")], { stdio: ["ignore", "pipe", "inherit"] });
-  llmPort = Number((await firstMatch(llm, /fake llm on (\d+)/))[1]);
-  const agentDir = path.join(tmp, "home", ".pi", "agent");
-  fs.mkdirSync(agentDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(agentDir, "models.json"),
-    JSON.stringify({
-      providers: {
-        fake: {
-          baseUrl: `http://127.0.0.1:${llmPort}/v1`,
-          apiKey: "fake",
-          api: "openai-completions",
-          models: [{ id: "fake-1", name: "Fake", reasoning: false, input: ["text"], contextWindow: 131072, maxTokens: 2048, cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 } }],
-        },
-      },
-    }),
-  );
-  env = {
-    ...process.env,
-    HOME: path.join(tmp, "home"),
-    USERPROFILE: path.join(tmp, "home"),
-    PI_CODING_AGENT_DIR: agentDir,
-    PI_OFFLINE: "1",
-    PI_SKIP_VERSION_CHECK: "1",
-    PI_TELEMETRY: "0",
-    PI_FLEET_POLL_MS: "300",
-    PI_FLEET_OWNER_PID: String(process.pid),
-  };
+  const model = await startFakeModel("pi fleet e2e");
+  ({ tmp, env } = model);
+  llm = model.proc;
+  llmLog = model.log;
 }, 30000);
 
 afterEach(() => {
@@ -197,14 +121,15 @@ describe("fleet end to end", () => {
     expect(res.status).toBe(200);
 
     await until("the reviewer's verdict", () => hub.tailMessages(50).find((m) => m.from === "reviewer" && m.text === "APPROVE"));
-    const log = await llmLog();
-    expect(new Set(log.map((r) => r.agent))).toEqual(new Set(["router", "planner", "implementer", "reviewer"]));
-    expect(log.filter((r) => r.agent !== "router" && r.last.includes("Routing task"))).toEqual([]); // no worker routes
-    expect(log.filter((r) => r.agent === "router")).toHaveLength(1); // APPROVE needed no model
     await until("the fleet to settle", async () => {
       const agents = Object.values(hub.readAgents());
       return agents.every((a) => a.status === "idle");
     });
+    await expectQuiet();
+    const log = await llmLog();
+    expect(new Set(log.map((r) => r.agent))).toEqual(new Set(["router", "planner", "implementer", "reviewer"]));
+    expect(log.filter((r) => r.agent !== "router" && r.last.includes("Routing task"))).toEqual([]); // no worker routes
+    expect(log.filter((r) => r.agent === "router")).toHaveLength(1); // APPROVE needed no model
   }, 60000);
 
   it("queues messages for a busy agent instead of losing them", async () => {

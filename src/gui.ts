@@ -33,6 +33,10 @@ export interface GuiSnapshot {
   stats?: Record<string, Record<string, unknown>>;
   /** Spending limit in dollars, if any. */
   maxCost?: number;
+  /** Fleet templates, for the first-run screen. */
+  templates?: { name: string; description: string }[];
+  /** The model new agents get, if one is set. */
+  defaultModel?: string;
 }
 
 /** RPC commands the GUI may proxy to an agent (whitelist). */
@@ -59,6 +63,19 @@ export interface NewAgentSpec {
   cwd?: string;
   model?: string;
   role?: string;
+}
+
+/** Everything a page can do to the fleet beyond chatting. Each throws, with a message for the page. */
+export interface FleetControls {
+  stopAgent(name: string): Promise<void>;
+  restartAgent(name: string): Promise<void>;
+  removeAgent(name: string): Promise<void>;
+  startTemplate(template: string, model: string | undefined): Promise<void>;
+  models(): Promise<string[]>;
+  readConfig(): unknown;
+  writeConfig(config: unknown): void;
+  search(query: string): FleetMessage[];
+  clearChannel(name: string): void;
 }
 
 export interface GuiServerOptions {
@@ -94,6 +111,8 @@ export interface GuiServerOptions {
   answer?: (id: string, answer: Answer) => void;
   /** Change the spending limit. */
   setBudget?: (dollars: number) => void;
+  /** Agent, config and history controls. */
+  controls?: FleetControls;
   /** List the channels (named group chats). */
   getChannels?: () => ChannelConfig[];
   /** Create or update a channel. */
@@ -111,7 +130,9 @@ export class GuiServer {
 
   constructor(private opts: GuiServerOptions) {
     const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "gui.html");
-    this.html = fs.readFileSync(htmlPath, "utf8");
+    // the renderer is its own file so it can be tested without a browser
+    const markdown = fs.readFileSync(path.join(path.dirname(htmlPath), "markdown.cjs"), "utf8");
+    this.html = fs.readFileSync(htmlPath, "utf8").replace("/* markdown.cjs */", () => markdown);
   }
 
   async start(): Promise<number> {
@@ -179,6 +200,23 @@ export class GuiServer {
     } catch {
       return false; // "null" from sandboxed frames and file:// pages
     }
+  }
+
+  /** Answer a control request: the handler's result as JSON, or its error for the page to show. */
+  private control(req: http.IncomingMessage, res: http.ServerResponse, handler: (body: Record<string, any>, controls: FleetControls) => unknown): void {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", async () => {
+      res.setHeader("Content-Type", "application/json");
+      try {
+        if (!this.opts.controls) throw new Error("not available");
+        const result = await handler(body ? (JSON.parse(body) as Record<string, any>) : {}, this.opts.controls);
+        res.end(JSON.stringify({ ok: true, ...(result === undefined ? {} : { result }) }));
+      } catch (e) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ ok: false, error: (e as Error).message }));
+      }
+    });
   }
 
   private servePage(res: http.ServerResponse): void {
@@ -389,6 +427,15 @@ export class GuiServer {
       );
       return;
     }
+    if (req.method === "POST" && url === "/agents/stop") return this.control(req, res, (b, c) => c.stopAgent(String(b.name)));
+    if (req.method === "POST" && url === "/agents/restart") return this.control(req, res, (b, c) => c.restartAgent(String(b.name)));
+    if (req.method === "POST" && url === "/agents/remove") return this.control(req, res, (b, c) => c.removeAgent(String(b.name)));
+    if (req.method === "POST" && url === "/start-template") return this.control(req, res, (b, c) => c.startTemplate(String(b.template), b.model ? String(b.model) : undefined));
+    if (req.method === "GET" && url === "/models") return this.control(req, res, (_b, c) => c.models());
+    if (req.method === "GET" && url === "/config") return this.control(req, res, (_b, c) => c.readConfig());
+    if (req.method === "POST" && url === "/config") return this.control(req, res, (b, c) => c.writeConfig(b));
+    if (req.method === "GET" && url === "/search") return this.control(req, res, (_b, c) => c.search(parsed.searchParams.get("q") ?? ""));
+    if (req.method === "POST" && url === "/channels/clear") return this.control(req, res, (b, c) => c.clearChannel(String(b.name)));
     if (req.method === "POST" && url === "/resume") {
       res.setHeader("Content-Type", "application/json");
       if (!this.opts.resumeHeld) {

@@ -82,6 +82,18 @@ export async function probeContextWindow(model: string): Promise<number | undefi
   }
 }
 
+/** Every model pi knows, as `provider/id`, asked of a short-lived process (no model server needed). */
+export async function availableModels(rpc?: RpcClient): Promise<string[]> {
+  const own = rpc ? null : new PiRpc(piArgv(ROOT, ["--mode", "rpc", "--no-session"]), { cwd: process.cwd(), env: { ...process.env }, logFile: path.join(os.tmpdir(), `pi-fleet-models-${Date.now()}.log`) });
+  try {
+    const res = await (rpc ?? own!).sendCommand({ type: "get_available_models" });
+    const models = (res.data as { models?: { provider: string; id: string }[] } | undefined)?.models ?? [];
+    return models.map((m) => `${m.provider}/${m.id}`);
+  } finally {
+    await own?.close();
+  }
+}
+
 /**
  * Decide whether an agent runs lean. Explicit `--lean`/`--no-lean` wins; otherwise
  * auto-detect from the model's context window (probed + cached per model).

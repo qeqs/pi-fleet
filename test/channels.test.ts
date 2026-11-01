@@ -147,6 +147,11 @@ describe("Hub channel storage", () => {
     hub.upsertChannel({ name: DEFAULT_CHANNEL, members: ["impl"], supervisor: "impl" });
     expect(hub.ensureDefaultChannel().supervisor).toBeUndefined();
   });
+  it("ensureDefaultChannel keeps a supervisor a person chose", () => {
+    hub.updateAgent("impl", { name: "impl", pid: 2, cwd: ".", status: "idle", startedAt: 0, lastReadOffset: 0, role: "implementer" });
+    hub.upsertChannel({ name: DEFAULT_CHANNEL, members: ["impl"], supervisor: "impl", pinned: true });
+    expect(hub.ensureDefaultChannel().supervisor).toBe("impl");
+  });
   it("ensureDefaultChannel prefers an agent with the supervisor role", () => {
     hub.updateAgent("boss", { name: "boss", pid: 1, cwd: ".", status: "idle", startedAt: 0, lastReadOffset: 0, role: "supervisor" });
     hub.updateAgent("worker", { name: "worker", pid: 2, cwd: ".", status: "idle", startedAt: 0, lastReadOffset: 0 });

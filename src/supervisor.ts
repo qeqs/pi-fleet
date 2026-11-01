@@ -12,11 +12,11 @@ import { PiRpcBridge, bridgeListening } from "./rpc.ts";
 import { agentNameFromSpec, agentCwdFromSpec, agentModelFromSpec, agentRoleFromSpec, isValidAgentName } from "./spec.ts";
 import { CHAT_HELP, parseChatLine } from "./chat.ts";
 import { GuiServer } from "./gui.ts";
-import { loadFleetConfig, agentSpecFromConfig, saveFleetConfig, configPath, isBudget } from "./config.ts";
-import { expandTemplate, templateNames, templateDescription } from "./templates.ts";
+import { loadFleetConfig, agentSpecFromConfig, saveFleetConfig, configPath, isBudget, checkFleetConfig } from "./config.ts";
+import { expandTemplate, templateNames, templateDescription, TEMPLATES } from "./templates.ts";
 import { discoverExtensions, readMcpConfig, writeMcpConfig } from "./pi-resources.ts";
 import { computeWakes } from "./wakes.ts";
-import { killProcessTree, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
+import { availableModels, killProcessTree, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
 import { RestartPolicy } from "./restart.ts";
 import { describeQuestion, parseAnswer, questionFrom, type Answer, type Question } from "./questions.ts";
 import { fallbackRoute, ModelRouter, parseRouterReply, routeByRules, routerPrompt, type RouteDecision } from "./router.ts";
@@ -449,7 +449,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   refreshDefaultChannel();
 
   function saveChannel(channel: ChannelConfig): void {
-    if (!isValidAgentName(channel.name)) throw new Error(`invalid channel name "${channel.name}": use letters, digits, "_" and "-"`);
+    if (channel.name !== "group" && !isValidAgentName(channel.name)) throw new Error(`invalid channel name "${channel.name}": use letters, digits, "_" and "-"`);
     if (hub.readAgents()[channel.name]) throw new Error(`"${channel.name}" is already an agent: a channel needs its own name`);
     hub.upsertChannel(channel);
     gui?.broadcast("channels", hub.readChannels());
@@ -496,7 +496,24 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         questions: [...questions.values()],
         stats: hub.readStats(),
         maxCost: limits.maxCost,
+        templates: Object.entries(TEMPLATES).map(([name, t]) => ({ name, description: t.description })),
+        defaultModel: args.model,
       }),
+      controls: {
+        stopAgent: (name) => stopAgent(name),
+        restartAgent: (name) => restartAgent(name),
+        removeAgent: forgetAgent,
+        startTemplate,
+        models: () => availableModels([...agents.values()][0]?.rpc),
+        readConfig: () => loadFleetConfig(hub.dir) ?? { agents: [] },
+        writeConfig: (config) => saveFleetConfig(hub.dir, checkFleetConfig(config, "fleet config")),
+        search: (query) => hub.searchMessages(query),
+        clearChannel: (name) => {
+          const channel = hub.getChannel(name);
+          if (!channel) throw new Error(hub.unknownTarget(name));
+          saveChannel({ ...channel, clearedAt: Date.now() });
+        },
+      },
       stopAll: () => stopAllRuns(),
       resumeHeld,
       answer: answerQuestion,
@@ -693,14 +710,33 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
 
   async function stopAgent(name: string) {
     const handle = agents.get(name);
-    if (!handle) {
-      print(`  no running agent "${name}"`);
-      return;
-    }
+    if (!handle) throw new Error(`no running agent "${name}"`);
     print(`  - stopping [${name}]…`);
     await endAgent(handle);
     hub.ackDelivered(name); // stopped on purpose: its work in progress is not to be resumed
     reassignRouters();
+  }
+
+  /** Forget an agent for good: stopped, out of the registry, the channels and the config. */
+  async function forgetAgent(name: string): Promise<void> {
+    const handle = agents.get(name);
+    if (handle) await endAgent(handle);
+    hub.clearInbox(name);
+    hub.removeAgent(name);
+    const cfg = loadFleetConfig(hub.dir);
+    if (cfg?.agents.some((a) => a.name === name)) saveFleetConfig(hub.dir, { ...cfg, agents: cfg.agents.filter((a) => a.name !== name) });
+    gui?.broadcast("agent_removed", { name });
+    gui?.broadcast("channels", hub.readChannels());
+  }
+
+  /** Start a whole crew from the first-run screen, and remember it for next time. */
+  async function startTemplate(template: string, model: string | undefined): Promise<void> {
+    const crew = expandTemplate(template);
+    if (!crew) throw new Error(`unknown template "${template}" (available: ${templateNames().join(", ")})`);
+    if (model) args.model = model;
+    for (const a of crew) await spawnAndTrack(a.name, baseCwd, model ?? args.model, a.role);
+    refreshDefaultChannel();
+    if (!loadFleetConfig(hub.dir)) saveFleetConfig(hub.dir, { defaultModel: model, agents: crew });
   }
 
   /** Restart an agent by hand. It keeps its conversation and any work in progress. */

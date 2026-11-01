@@ -340,6 +340,39 @@ describe("router failover", () => {
   });
 });
 
+describe("searchMessages", () => {
+  const say = (text: string) => hub.appendMessage({ from: "a", to: "group", kind: "chat", text });
+
+  it("finds messages in the bus and its archives, newest first, ignoring case", () => {
+    say("the Parser bug");
+    hub.rotateIfLarge(1);
+    say("unrelated");
+    say("parser fixed");
+    expect(hub.searchMessages("parser").map((m) => m.text)).toEqual(["parser fixed", "the Parser bug"]);
+  });
+
+  it("leaves out system notices", () => {
+    hub.appendMessage({ from: "system", to: "group", kind: "system", text: "parser notice" });
+    expect(hub.searchMessages("parser")).toEqual([]);
+  });
+
+  it("stops at the limit", () => {
+    for (let i = 0; i < 5; i++) say(`match ${i}`);
+    expect(hub.searchMessages("match", 2).map((m) => m.text)).toEqual(["match 4", "match 3"]);
+  });
+});
+
+describe("removing an agent", () => {
+  it("takes it out of the registry and every channel", () => {
+    hub.updateAgent("a", { name: "a", pid: 1, cwd: ".", status: "idle" });
+    hub.upsertChannel({ name: "dev", members: ["a", "b"], supervisor: "a" });
+    hub.removeAgent("a");
+    expect(hub.readAgents().a).toBeUndefined();
+    expect(hub.getChannel("dev")).toMatchObject({ members: ["b"] });
+    expect(hub.getChannel("dev")?.supervisor).toBeUndefined();
+  });
+});
+
 describe("channel summary notes", () => {
   it("adds a note to the summary, on one line", () => {
     hub.upsertChannel({ name: "dev", members: [], summary: "so far" });

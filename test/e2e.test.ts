@@ -516,6 +516,15 @@ describe("fleet end to end", () => {
     expect(printed).not.toContain("\x1b]0;");
   }, 60000);
 
+  it.skipIf(process.platform === "win32")("takes its agents with it when it is told to stop", async () => {
+    const { proc, hub } = startFleet("sigterm", ["up", "--agent", "alice"]);
+    await idle(hub, ["alice"]);
+    const { pid } = hub.readAgents().alice;
+    proc.kill("SIGTERM");
+    await until("the agent to stop", () => !isPidAlive(pid));
+    expect(hub.readAgents().alice.status).toBe("stopped");
+  }, 60000);
+
   it("gives agents the task board fleet.json names", async () => {
     const hubDir = path.join(tmp, "board-config");
     fs.mkdirSync(hubDir, { recursive: true });

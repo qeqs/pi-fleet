@@ -123,12 +123,12 @@ messages wait while it works.
 
 ## 7. 1.0
 
-- [ ] A `fleet` command from `npm install -g`, instead of `npm run fleet --`
-- [ ] Desktop installers for Windows, Linux and macOS
-- [ ] Project switcher: the desktop hub is no longer tied to the repository folder
-- [ ] Versioned hub format, with upgrades from earlier releases
-- [ ] A full security review, with findings fixed
-- [ ] Getting-started guide, `CONTRIBUTING.md` and `CHANGELOG.md`
+- [x] A `fleet` command from `npm install -g`, instead of `npm run fleet --`
+- [x] Desktop installers for Windows, Linux and macOS
+- [x] Project switcher: the desktop hub is no longer tied to the repository folder
+- [x] Versioned hub format, with upgrades from earlier releases
+- [x] A full security review, with findings fixed
+- [x] Getting-started guide, `CONTRIBUTING.md` and `CHANGELOG.md`
 
 **Done when:** `v1.0.0` is tagged, and a clean machine on each system can install it and finish the sdlc task by following the guide.
 

@@ -119,27 +119,29 @@ fleet> # refactor the parser and add tests
 
 ## Setup
 
+[GETTING_STARTED.md](GETTING_STARTED.md) goes from nothing to a finished task. In short:
+
 ```bash
-npm install
+npm install -g github:qeqs/pi-fleet#v1.0.0
 ```
 
-Requires `pi` on PATH (global `@earendil-works/pi-coding-agent`) and working
-model/auth config in `~/.pi`.
+or use a desktop installer from the [releases page](https://github.com/qeqs/pi-fleet/releases/latest),
+which needs no Node. Either way, pi needs a working model config in `~/.pi`.
 
 ## Usage
 
 ```bash
 # start the fleet + group chat (agents named, optional per-agent cwd + model)
-npm run fleet -- up --agent alice --agent bob:./other-project
+fleet up --agent alice --agent bob:./other-project
 
 # heterogeneous fleet: per-agent model in the spec (name[:cwd][:model])
 # lean is auto-applied to the small model (4B), not the 27B
-npm run fleet -- up --agent "planner::hf-space-qwen38/huihui-qwen3.8-27b-abliterated" \
+fleet up --agent "planner::hf-space-qwen38/huihui-qwen3.8-27b-abliterated" \
                      --agent "worker::local-llm-lab/Qwen/Qwen3-4B-AWQ"
 
 # force lean on/off for every agent (overrides auto-detect)
-npm run fleet -- up --lean --agent alice --agent bob
-npm run fleet -- up --no-lean --agent alice --agent bob
+fleet up --lean --agent alice --agent bob
+fleet up --no-lean --agent alice --agent bob
 
 # spawn more agents live from the chat:
 fleet> /new carol ./third-project
@@ -147,18 +149,18 @@ fleet> /agents
 fleet> /stop bob
 
 # detached mode: agents keep running after you /quit
-npm run fleet -- up --detach --agent alice --agent bob
+fleet up --detach --agent alice --agent bob
 # ... later, re-attach (auto-resume) — agents keep their session context:
-npm run fleet -- up --agent alice --agent bob
+fleet up --agent alice --agent bob
 # or with no agents, re-attach to everything still alive:
-npm run fleet -- up
+fleet up
 
 # standalone commands
-npm run fleet -- list
-npm run fleet -- stop [name|all]
-npm run fleet -- log [name]
-npm run fleet -- doctor     # check pi, the hub, the config and the models
-npm run fleet -- help
+fleet list
+fleet stop [name|all]
+fleet log [name]
+fleet doctor     # check pi, the hub, the config and the models
+fleet help
 ```
 
 Group chat input:
@@ -191,7 +193,7 @@ as they happen. It's a plain Node HTTP server (SSE for server→client, HTTP POS
 client→server) with no extra dependencies.
 
 ```bash
-npm run fleet -- up --gui --agent "planner::hf-space-qwen38/huihui-qwen38-27b-abliterated" --agent "worker::local-llm-lab/Qwen/Qwen3-4B-AWQ"
+fleet up --gui --agent "planner::hf-space-qwen38/huihui-qwen38-27b-abliterated" --agent "worker::local-llm-lab/Qwen/Qwen3-4B-AWQ"
 # prints: 🖥  GUI: http://127.0.0.1:<port>/?token=<token>
 ```
 
@@ -233,7 +235,7 @@ it on a machine or sharing it over the network. The fleet comes from `--agent` f
 a `--template`, or `fleet.json`:
 
 ```bash
-npm run fleet -- serve --host 0.0.0.0 --port 8080   # LAN-accessible web UI
+fleet serve --host 0.0.0.0 --port 8080   # LAN-accessible web UI
 ```
 
 The server speaks plain HTTP, so on a shared network the token can be sniffed: put it
@@ -241,15 +243,17 @@ behind a TLS proxy or a VPN, because whoever has the link controls the agents.
 
 ## Desktop app (Electron)
 
-`npm run desktop` wraps the web UI in a native window. The Electron main process
-(`electron/main.mjs`) launches the fleet supervisor as a child process and loads its
-web UI into a BrowserWindow; closing the window kills the supervisor's whole process
-tree (supervisor → bridges → pi). The fleet composition comes from `fleet.json` (below),
-so the app knows what to spawn without a long CLI.
+The desktop app wraps the web UI in a native window, and needs no Node on the machine. The
+Electron main process (`electron/main.mjs`) launches the fleet supervisor as a child process
+and loads its web UI into a BrowserWindow; closing the window kills the supervisor's whole
+process tree (supervisor → bridges → pi).
 
-```bash
-npm run desktop
-```
+It works on one project folder at a time, whose fleet lives in `<folder>/.pi-fleet`. **File →
+Open Project** and **Open Recent** move between folders, and the last one reopens at launch.
+The app asks before opening a new folder that brings its own fleet or pi configuration.
+
+Installers are on the [releases page](https://github.com/qeqs/pi-fleet/releases/latest). From a
+checkout, `npm run desktop` runs the app, and `npm run dist` builds an installer for your system.
 
 ## Fleet config
 
@@ -258,8 +262,8 @@ npm run desktop
 the agents listed here.
 
 ```bash
-npm run fleet -- init      # create a starter .pi-fleet/fleet.json
-npm run fleet -- config    # show it
+fleet init      # create a starter .pi-fleet/fleet.json
+fleet config    # show it
 ```
 
 ```json
@@ -281,8 +285,8 @@ For common crews, `--template` expands to a set of agents in one word (sugar for
 `pair` (implementer + reviewer), `solo` (one implementer).
 
 ```bash
-npm run fleet -- templates                       # list templates
-npm run fleet -- up --template sdlc --model provider/model
+fleet templates                       # list templates
+fleet up --template sdlc --model provider/model
 ```
 
 ## Session naming
@@ -291,7 +295,7 @@ Each agent's pi session can be given a display name (shows up in pi's session
 listings). Two ways:
 
 ```bash
-npm run fleet -- rename <agent> <session-name>   # CLI
+fleet rename <agent> <session-name>   # CLI
 ```
 
 or click the **name** button on an agent's pane in the GUI. Both forward pi's
@@ -376,7 +380,7 @@ Run `openspec init` in a project cwd first if it has no `openspec/` directory.
 OpenSpec is the default task board, but the fleet can use **beads** (the `bd` CLI) instead. Set `"taskboard": "beads"` in `fleet.json`, or pass `--taskboard beads`. Agents then get a `beads` tool (instead of `openspec`) and a task-board-aware prompt, and Settings → Tasks shows that board. `PI_FLEET_TASKBOARD=beads` still works when neither is set.
 
 ```bash
-npm run fleet -- up --taskboard beads --agent "worker:./my-project"
+fleet up --taskboard beads --agent "worker:./my-project"
 ```
 
 Requires `bd` on PATH (on Windows, `bd.exe`). Run `bd init` once in a project cwd before agents use it. The agent creates issues (`bd create <title>`), lists them (`bd list`), and closes them when done (`bd close <id>`).
@@ -390,7 +394,7 @@ are on. Reviewers and planners stay in the main checkout and read the path an im
 them. `"worktree": true` or `false` on an agent in `fleet.json` overrides this.
 
 ```bash
-npm run fleet -- up --worktrees \
+fleet up --worktrees \
   --agent "impl1:./my-project::implementer" \
   --agent "impl2:./my-project::implementer" \
   --agent "reviewer:./my-project::reviewer"
@@ -422,6 +426,8 @@ src/restart.ts         when to bring a crashed agent back
 src/questions.ts       questions from agents to the human
 src/router.ts          the dedicated channel router: rules, then one short model call
 src/worktree.ts        a git worktree per agent: create, diff, merge
+src/programs.ts        starting other programs by full path, never in a shell
+src/hubformat.ts       the hub's format version, and upgrades from earlier releases
 src/taskboard.ts       reads the OpenSpec or beads board for the GUI
 src/timeline.ts        who woke whom for each request, and what it cost
 src/rpc.ts             pi RPC client (JSONL) — direct child + named-pipe bridge client
@@ -433,6 +439,8 @@ src/gui.ts             web UI server (SSE + POST, no deps)
 src/gui.html           single-page web UI
 src/extension/index.ts pi extension loaded by each agent (tools, prompt, poller, roles)
 electron/main.mjs      Electron desktop shell (npm run desktop)
+electron/projects.mjs  the folders the desktop app has opened
+scripts/               installs a release the way a person would, and finishes a task in it
 src/markdown.cjs       Markdown for agent output, inlined into the page
 test/                  vitest suite (unit, e2e with real pi and a scripted model, browser)
 .pi-fleet/             runtime state (created on first run)
@@ -456,6 +464,11 @@ scripted OpenAI-compatible endpoint. It covers what the unit tests cannot see: a
 actually travelling through the fleet (the sdlc chain, a busy agent, detached channels) and
 the brakes stopping real runs (hop and turn limits, Stop all). `test/gui-browser.test.ts` drives
 the page in a real browser the same way, using whatever Chrome or Edge is installed.
+
+## More
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers development, [SECURITY.md](SECURITY.md) what an agent can do
+and what the fleet protects, and [CHANGELOG.md](CHANGELOG.md) what changed in each release.
 
 ## Roadmap
 

@@ -156,11 +156,11 @@ describe.skipIf(!executable)("the desktop app", () => {
     await step("the first project's history", page.locator("#conversation").getByText("APPROVE").waitFor({ timeout: 0 }));
     expect(readProjects(projectsOf(userData))[0]).toBe(one);
 
-    const pid = firstFleet.otherSupervisor();
-    expect(pid).toBeTruthy();
+    const pids = [firstFleet.otherSupervisor()!, ...Object.values(firstFleet.readAgents()).map((a) => a.pid)];
+    expect(pids.length).toBe(4);
     await step("the app to close", app!.close());
     app = undefined;
-    await until("the supervisor to go with the app", () => !isPidAlive(pid!));
+    await until("the fleet to go with the app", () => !pids.some(isPidAlive));
   }, 300000);
 
   it.skipIf(!!installed)("will not open a folder with its own setup until the person agrees", async () => {

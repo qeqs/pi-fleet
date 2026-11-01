@@ -1,7 +1,7 @@
 # Goal: ship pi-fleet 1.0 by completing ROADMAP.md
 
 Owner: pi-fleet
-Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
+Status: DONE. Set and finished 2026-11-01, with `v1.0.0` tagged.
 
 ## Definition of done
 - Every `[ ]` in `ROADMAP.md` is `[x]` (implemented + verified) or explicitly descoped with a
@@ -21,6 +21,14 @@ Status: ACTIVE, set 2026-11-01. Next up: Milestone 0 (Foundation).
   in the roadmap. (Pull requests need `gh` or a token, which this environment does not have.)
 
 ## Progress log
+- 2026-11-01: Milestone 7 done (1.0.0). The Release workflow is the demonstration: on Windows,
+  Linux and macOS it runs `npm install -g` from GitHub and finishes the sdlc task with
+  `scripts/check-install.mjs`, which follows `GETTING_STARTED.md` on the command line, then builds
+  the installer, installs it, and runs `test/desktop.test.ts` against the installed app. Those use
+  the scripted model. Real-model sdlc chain on hf-space-qwen38 with this code: 96s under load,
+  no routing turn in any worker. Hubs that releases 0.1.1 to 0.6.0 really wrote upgrade in
+  `test/e2e.test.ts`. The security review and what stays open are in `SECURITY.md`. Linux CI
+  found that a fleet ignored `SIGTERM`, which left agents running after the app quit.
 - 2026-11-01: Milestone 6 done (0.7.0). Real-model run on hf-space-qwen38: two implementers
   changed one repository at once in their own worktrees, the reviewer read both worktrees and
   approved, and both branches merged through the fleet's own `/merge` in 90s, with `main`

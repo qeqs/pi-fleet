@@ -23,6 +23,7 @@ const ROOT = path.resolve(__dirname, "..");
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const FLEET = path.join(ROOT, "src", "fleet.ts");
 const GUI_TOKEN = crypto.randomBytes(24).toString("base64url");
+const STOP_WAIT_MS = 10000;
 
 let supervisor = null;
 let supervisorUp = false; // once it has served the page, losing it ends the app
@@ -88,10 +89,16 @@ async function startSupervisor(dir) {
   return { url: `http://127.0.0.1:${port}/?token=${GUI_TOKEN}`, exited };
 }
 
+/** Stop the fleet and wait for it, since its agents stop with it. */
 function stopSupervisor() {
-  if (!supervisor) return;
-  const pid = supervisor.pid;
+  const child = supervisor;
+  if (!child || child.exitCode !== null) return Promise.resolve();
+  const { pid } = child;
   supervisor = null;
+  const gone = new Promise((resolve) => {
+    child.once("exit", resolve);
+    setTimeout(resolve, STOP_WAIT_MS);
+  });
   try {
     // by full path: a bare name would also find a taskkill in the project folder
     if (process.platform === "win32") execFileSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
@@ -99,6 +106,7 @@ function stopSupervisor() {
   } catch {
     // already gone
   }
+  return gone;
 }
 
 function buildMenu() {
@@ -161,11 +169,11 @@ async function openProject(dir) {
 async function switchTo(dir) {
   if (dir === project || !(await trusted(dir))) return;
   const previous = project;
-  stopSupervisor();
+  await stopSupervisor();
   try {
     await openProject(dir);
   } catch (e) {
-    stopSupervisor();
+    await stopSupervisor();
     if (quitting) return;
     dialog.showErrorBox(`pi-fleet could not open ${dir}`, e.message);
     if (previous) await openProject(previous);
@@ -224,12 +232,16 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("window-all-closed", () => {
-  stopSupervisor();
+app.on("window-all-closed", async () => {
+  await stopSupervisor();
   project = null;
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", () => (quitting = true));
 // app.quit() closes the windows without the event above
-app.on("will-quit", stopSupervisor);
+app.on("will-quit", (e) => {
+  if (!supervisor) return;
+  e.preventDefault();
+  stopSupervisor().finally(() => app.quit());
+});

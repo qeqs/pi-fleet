@@ -975,4 +975,5 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   }
 
   process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown()); // the desktop app, `kill`, a service manager: agents go too
 }

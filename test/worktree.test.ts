@@ -13,7 +13,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 const write = (dir: string, file: string, text: string) => fs.writeFileSync(path.join(dir, file), text);
 
 beforeEach(() => {
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "fleet-wt-")));
+  tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "fleet-wt-")));
   repo = path.join(tmp, "repo");
   hub = path.join(tmp, "hub");
   fs.mkdirSync(repo);
@@ -168,6 +168,7 @@ describe("mergeWorktree", () => {
   it("does not need a git identity on the machine", () => {
     git(repo, "config", "--unset", "user.name");
     git(repo, "config", "--unset", "user.email");
+    git(repo, "config", "user.useConfigOnly", "true"); // or git makes one up from the host name
     const wt = ensureWorktree(repo, hub, "alice");
     write(wt.path, "new.txt", "done\n");
     const home = { ...process.env };

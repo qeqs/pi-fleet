@@ -6,6 +6,9 @@
   default and routing models.
 - A model is tested before a crew starts, and `fleet doctor` really asks it for a word.
 - A model chosen for an agent survives a restart.
+- The first-run screen lists every model to pick from, and follows the default chosen in Settings.
+- The desktop app uses the computer's proxy settings, so hosted models work behind one.
+- Starting the desktop app a second time brings up the running one.
 - Agents wake each other less. A name in passing, such as "thanks @rev", wakes nobody: only the
   names an agent's message opens with do, and the router reads the rest. A person's @name still
   wakes whoever they name.
@@ -15,6 +18,8 @@
 - `openspec init` no longer adds skills and prompts for other AI tools to your repository.
 - Fixed: a model error showed as empty messages in the agent's chat. It now shows the error, once.
 - Fixed: the router said it "gave no usable answer" without saying why, and waited out pi's retries.
+- Fixed: with no model set up, `fleet doctor` and a model test waited two minutes for an answer that
+  could not come.
 - Fixed: every request to pi kept a finished command alive for its full timeout, and every pi process
   left its log file open.
 

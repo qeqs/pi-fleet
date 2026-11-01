@@ -18,10 +18,12 @@ vi.setConfig({ testTimeout: 60000 }); // each case boots node and tsx, some of t
 
 let tmp: string;
 
-function fleet(...args: string[]): { code: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [TSX, FLEET, ...args], { cwd: tmp, encoding: "utf8", timeout: 60000 });
+function fleetWith(env: NodeJS.ProcessEnv, ...args: string[]): { code: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(process.execPath, [TSX, FLEET, ...args], { cwd: tmp, encoding: "utf8", timeout: 60000, env: { ...process.env, ...env } });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
+
+const fleet = (...args: string[]) => fleetWith({}, ...args);
 
 function expectCleanFailure(r: ReturnType<typeof fleet>, code: number, message: string): void {
   expect(r.stderr).toContain(message);
@@ -119,10 +121,21 @@ describe("fleet help and stop", () => {
 });
 
 describe("fleet doctor", () => {
+  /** A machine with pi and nothing set up, whatever this one has. */
+  const noModels = () => ({ PI_CODING_AGENT_DIR: hubWith("no-models"), PI_OFFLINE: "1" });
+
   it("passes on a healthy setup and shows what it checked", () => {
-    const r = fleet("doctor", "--dir", hubWith("healthy"));
+    const r = fleetWith(noModels(), "doctor", "--dir", hubWith("healthy"));
     expect(r.code).toBe(0);
     for (const label of ["node", "pi", "openspec", "hub", "config", "supervisor", "agents"]) expect(r.stdout).toMatch(new RegExp(`^ok\\s+${label}\\s`, "m"));
+  });
+
+  it("says when no model is set up, at once", () => {
+    const started = Date.now();
+    const r = fleetWith(noModels(), "doctor", "--dir", hubWith("doctor-no-model"));
+    expect(r.code).toBe(0); // a warning: there is no fleet yet to fail
+    expect(r.stdout).toMatch(/^warn\s+model\s+pi's default model does not answer: No API key found/m);
+    expect(Date.now() - started).toBeLessThan(45000); // a real wait would be two minutes
   });
 
   it("fails on an invalid config and says why", () => {

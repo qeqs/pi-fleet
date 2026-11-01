@@ -17,6 +17,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { needsTrust, readProjects, rememberProject, startingProject } from "./projects.mjs";
+import { proxyEnv } from "./proxy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -63,12 +64,13 @@ function waitForHttp(url, timeoutMs = 90000) {
 
 async function startSupervisor(dir) {
   const port = await findFreePort();
+  const proxy = proxyEnv(process.env, await session.defaultSession.resolveProxy("https://example.com").catch(() => "DIRECT"));
   supervisorOutput = "";
   supervisorUp = false;
   const child = spawn(
     process.execPath,
     [TSX_CLI, FLEET, "up", "--gui", "--port", String(port), "--dir", path.join(dir, ".pi-fleet")],
-    { cwd: dir, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PI_FLEET_GUI_TOKEN: GUI_TOKEN } },
+    { cwd: dir, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...proxy, ELECTRON_RUN_AS_NODE: "1", PI_FLEET_GUI_TOKEN: GUI_TOKEN } },
   );
   supervisor = child;
   const tag = (s) => String(s).split("\n").map((l) => `[supervisor] ${l}`).join("\n");
@@ -217,7 +219,17 @@ async function launch() {
   await openProject(dir);
 }
 
+// a second copy would find the same project and be refused a second fleet on it
+const firstCopy = app.requestSingleInstanceLock();
+if (!firstCopy) app.quit();
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+});
+
 app.whenReady().then(() => {
+  if (!firstCopy) return;
   // the page asks for nothing but notifications
   session.defaultSession.setPermissionRequestHandler((_contents, permission, allow) => allow(permission === "notifications"));
   launch().catch((e) => {

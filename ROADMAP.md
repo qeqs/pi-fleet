@@ -144,6 +144,9 @@ the group chat had only ever run small tasks.
 - [x] The router says why it failed, and does not wait out pi's retries
 - [x] A Models tab in Settings: add a server or an API key, test a model, choose the default and routing models
 - [x] A model is tested before a crew starts, and `fleet doctor` really asks it for a word
+- [x] The first-run screen lists every model and follows the default chosen in Settings
+- [x] The desktop app uses the computer's proxy settings
+- [x] Starting the desktop app a second time brings up the running one
 - [x] A model chosen for an agent survives a restart, even if it was chosen while the crew started
 - [x] An agent wakes another only by opening its message with that name; a name in passing goes to the router
 - [x] Messages for an agent in the middle of a run arrive as one wake

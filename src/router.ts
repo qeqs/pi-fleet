@@ -147,7 +147,12 @@ export class ModelRouter {
     this.waiting = wait;
     const timer = setTimeout(() => wait.done(), ROUTER_TIMEOUT_MS);
     try {
-      await rpc.prompt(prompt);
+      const res = await rpc.prompt(prompt);
+      if (res.success === false) {
+        // refused, so no run will ever settle: a missing key lands here
+        this.failure = String(res.error ?? "pi refused the request").split("\n")[0];
+        return "";
+      }
       await settled;
     } finally {
       clearTimeout(timer);

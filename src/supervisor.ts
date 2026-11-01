@@ -77,7 +77,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
   // This is what the desktop app relies on — it launches `fleet up` with no agents
   // and the config decides what to spawn. We also keep the config around so we can
   // look up per-agent extensions (plugins) by name for any spawn.
-  const fleetCfg = loadFleetConfig(hub.dir);
+  let fleetCfg = loadFleetConfig(hub.dir);
   if (args.agents.length === 0) {
     if (fleetCfg && fleetCfg.agents.length > 0) {
       args.agents = fleetCfg.agents.map(agentSpecFromConfig);
@@ -545,7 +545,7 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         stats: hub.readStats(),
         maxCost: limits.maxCost,
         templates: Object.entries(TEMPLATES).map(([name, t]) => ({ name, description: t.description })),
-        defaultModel: args.model,
+        defaultModel: args.model ?? fleetCfg?.defaultModel,
       }),
       controls: {
         stopAgent: (name) => stopAgent(name),
@@ -559,7 +559,11 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         saveApiKey,
         setAgentModel,
         readConfig: () => loadFleetConfig(hub.dir) ?? { agents: [] },
-        writeConfig: (config) => saveFleetConfig(hub.dir, checkFleetConfig(config, "fleet config")),
+        writeConfig: (config) => {
+          fleetCfg = checkFleetConfig(config, "fleet config");
+          saveFleetConfig(hub.dir, fleetCfg);
+          if (fleetCfg.defaultModel) args.model = fleetCfg.defaultModel; // new agents get it from now on
+        },
         search: (query) => hub.searchMessages(query),
         diff: (agent) => worktreeChanges(worktreeOf(agent)),
         merge: mergeAgent,
@@ -817,10 +821,12 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     if (model) args.model = model;
     for (const a of crew) await spawnAndTrack(a.name, baseCwd, model ?? args.model, a.role);
     refreshDefaultChannel();
-    if (loadFleetConfig(hub.dir)) return;
+    const saved = loadFleetConfig(hub.dir);
+    if (saved?.agents.length) return; // choosing a default model first saves a config with no crew
     // a person can pick a model for the first agent while the last one is still starting
     const running = hub.readAgents();
-    saveFleetConfig(hub.dir, { defaultModel: model, agents: crew.map((a) => (running[a.name]?.model && running[a.name].model !== model ? { ...a, model: running[a.name].model } : a)) });
+    fleetCfg = { ...saved, defaultModel: args.model, agents: crew.map((a) => (running[a.name]?.model && running[a.name].model !== model ? { ...a, model: running[a.name].model } : a)) };
+    saveFleetConfig(hub.dir, fleetCfg);
   }
 
   /** Change a running agent's model, and keep the change for the next start. */

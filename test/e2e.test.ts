@@ -137,18 +137,20 @@ describe("fleet end to end", () => {
   it("gives a busy agent what arrived during its run in one wake", async () => {
     const { hub } = startFleet("merged", ["serve", "--agent", "alice", "--agent", "bob"]);
     await idle(hub, ["alice", "bob"]);
-    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[slow 3]] a long job" });
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[slow 5]] a long job" });
     await until("alice busy", () => hub.readAgents().alice.status === "busy");
-    const before = (await llmLog()).length;
     hub.appendMessage({ from: "bob", to: "alice", kind: "chat", text: "one meanwhile" });
-    await sleep(600);
+    await sleep(1000); // past one tick of the bus, so these are two wakes to merge
     hub.appendMessage({ from: "bob", to: "alice", kind: "chat", text: "two meanwhile" });
+    const waiting = () => hub.readInbox("alice").filter((e) => e.text.includes("meanwhile"));
+    await until("both in the inbox", () => waiting().length === 2);
+    expect(waiting().some((e) => e.delivered)).toBe(false); // a crash now would interrupt neither
     await until("the wake", async () => (await llmLog()).find((r) => r.agent === "alice" && r.last.includes("two meanwhile")));
     await sleep(300);
     await idle(hub, ["alice"]);
-    const wakes = (await llmLog()).slice(before).filter((r) => r.agent === "alice");
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0].last).toContain("one meanwhile");
+    // not by position in the log: the model can hear of the long job after alice shows as busy
+    const wakes = (await llmLog()).filter((r) => r.agent === "alice" && r.last.includes("meanwhile"));
+    expect(wakes.map((r) => r.last)).toEqual([expect.stringContaining("one meanwhile")]);
     expect(wakes[0].last).toContain("two meanwhile");
   }, 60000);
 

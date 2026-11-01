@@ -81,7 +81,7 @@ describe("a new user", () => {
 
     await page.waitForSelector(".firstrun");
     await page.waitForFunction(() => document.querySelectorAll("#modelList option").length > 0);
-    await page.fill("#firstModel", MODEL);
+    await page.selectOption("#firstModel", MODEL);
     await page.click('button[data-template="sdlc"]');
     await ready(page, "planner", "implementer", "reviewer");
 
@@ -94,7 +94,7 @@ describe("a new user", () => {
   it("is told what went wrong when the crew cannot start", async () => {
     const { page } = await open("first-run-bad", []);
     await page.waitForSelector(".firstrun");
-    await page.fill("#firstModel", "");
+    await page.selectOption("#firstModel", MODEL);
     await page.evaluate(() => document.querySelector('button[data-template="sdlc"]')!.setAttribute("data-template", "nope"));
     await page.click('button[data-template="nope"]');
     await page.waitForFunction(() => document.getElementById("firstError")!.textContent!.includes("unknown template"));
@@ -306,7 +306,7 @@ describe("a model that cannot be reached", () => {
   it("is caught before a crew starts, and can be started anyway", async () => {
     const { page, hubDir } = await open("dead-first-run", []);
     await page.waitForSelector(".firstrun");
-    await page.fill("#firstModel", DEAD_MODEL);
+    await page.selectOption("#firstModel", DEAD_MODEL);
     await page.click('button[data-template="pair"]');
     await page.locator("#firstError", { hasText: "did not answer: Connection error" }).waitFor({ timeout: 30000 });
     expect(fs.existsSync(path.join(hubDir, "fleet.json"))).toBe(false);
@@ -350,6 +350,43 @@ describe("setting up models", () => {
     await row.locator(".mres.bad").getByText("Connection error").waitFor({ timeout: 30000 });
   }, 60000);
 
+  it("offers every model on the first-run screen, and keeps a default chosen in Settings", async () => {
+    const { page, hubDir } = await open("first-run-default", []);
+    await page.waitForSelector(".firstrun");
+    await page.selectOption("#firstModel", DEAD_MODEL);
+    expect(await page.locator("#firstModel option").evaluateAll((all) => all.map((o) => (o as HTMLOptionElement).value))).toEqual(expect.arrayContaining([MODEL, DEAD_MODEL]));
+    await page.click('button[data-template="pair"]');
+    await page.locator("#firstError", { hasText: "did not answer" }).waitFor({ timeout: 30000 });
+
+    await page.click("[data-open-models]");
+    await page.waitForSelector("#modelRows");
+    const row = page.locator(`.mrow[data-model="${MODEL}"]`);
+    await row.locator('button[data-do="default"]').click();
+    await page.locator(`.mrow[data-model="${MODEL}"] .tag`).getByText("default").waitFor({ timeout: 20000 });
+    await page.click("#closeSettings");
+    expect(await page.inputValue("#firstModel")).toBe(MODEL);
+    expect(await page.textContent("#firstError")).toBe(""); // that error was about the old model
+
+    await page.reload();
+    await page.waitForSelector(".firstrun");
+    await page.waitForFunction((want) => (document.getElementById("firstModel") as HTMLSelectElement | null)?.value === want, MODEL);
+
+    await page.click('button[data-template="pair"]');
+    await ready(page, "implementer", "reviewer");
+    const config = path.join(hubDir, "fleet.json");
+    await until("the crew to be kept", () => JSON.parse(fs.readFileSync(config, "utf8")).agents.length === 2);
+    expect(JSON.parse(fs.readFileSync(config, "utf8")).defaultModel).toBe(MODEL);
+  }, 90000);
+
+  it("offers a saved default when the app comes back with no crew yet", async () => {
+    const dir = path.join(model.tmp, "saved-default");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "fleet.json"), JSON.stringify({ defaultModel: "saved/not-listed", agents: [] }));
+    const { page } = await open("saved-default", []);
+    await page.waitForSelector(".firstrun");
+    await page.waitForFunction(() => (document.getElementById("firstModel") as HTMLSelectElement | null)?.value === "saved/not-listed");
+  }, 60000);
+
   it("saves a key without ever showing it again", async () => {
     const { page } = await open("add-key", agentsFor("alice"));
     await ready(page, "alice");
@@ -366,7 +403,7 @@ describe("setting up models", () => {
   it("keeps a model chosen for an agent after a restart", async () => {
     const { page, hubDir } = await open("pick-model", []);
     await page.waitForSelector(".firstrun");
-    await page.fill("#firstModel", MODEL);
+    await page.selectOption("#firstModel", MODEL);
     await page.click('button[data-template="pair"]');
     const name = "implementer";
     await ready(page, name);

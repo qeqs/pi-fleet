@@ -4,6 +4,7 @@
  * sources. Needs Electron's binary, which the plain test job does not download.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -12,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { _electron, type ElectronApplication, type Page } from "playwright-core";
 import { needsTrust, readProjects, rememberProject, startingProject } from "../electron/projects.mjs";
+import { proxyEnv } from "../electron/proxy.mjs";
 import { Hub, isPidAlive } from "../src/hub.ts";
 import { MODEL, ROOT, killTree, startFakeModel, until } from "./support.ts";
 
@@ -69,6 +71,20 @@ describe("remembering projects", () => {
     rememberProject(file, "/deleted");
     expect(startingProject(file, (d) => d === "/still-here")).toBe("/still-here");
     expect(startingProject(file, () => false)).toBeNull();
+  });
+});
+
+describe("the system proxy", () => {
+  it("is passed on, with local servers left out", () => {
+    expect(proxyEnv({}, "PROXY 127.0.0.1:2080")).toEqual({ HTTPS_PROXY: "http://127.0.0.1:2080", HTTP_PROXY: "http://127.0.0.1:2080", NO_PROXY: "localhost,127.0.0.1,::1" });
+    expect(proxyEnv({}, "HTTPS corp.example:443;DIRECT").HTTPS_PROXY).toBe("https://corp.example:443");
+    expect(proxyEnv({ NO_PROXY: ".local" }, "PROXY a:1").NO_PROXY).toBe(".local");
+  });
+
+  it("stays out of the way when there is none, or one is already set", () => {
+    expect(proxyEnv({}, "DIRECT")).toEqual({});
+    expect(proxyEnv({}, "SOCKS5 127.0.0.1:1080")).toEqual({});
+    expect(proxyEnv({ HTTPS_PROXY: "http://mine:1" }, "PROXY a:1")).toEqual({});
   });
 });
 
@@ -132,7 +148,7 @@ describe.skipIf(!executable)("the desktop app", () => {
   async function startCrew(page: Page): Promise<void> {
     await step("the first-run screen", page.waitForSelector(".firstrun", { timeout: 0 }));
     await step("the model list", page.waitForFunction(() => document.querySelectorAll("#modelList option").length > 0, undefined, { timeout: 0 }));
-    await page.fill("#firstModel", MODEL);
+    await page.selectOption("#firstModel", MODEL);
     await page.click('button[data-template="sdlc"]');
     for (const n of ["planner", "implementer", "reviewer"]) await step(`${n} to start`, page.waitForSelector(`[data-chat="${n}"] .cdot.idle`, { timeout: 0 }));
   }
@@ -184,6 +200,32 @@ describe.skipIf(!executable)("the desktop app", () => {
     expect(fs.readFileSync(asked, "utf8")).toContain("project-two");
     await new Promise((resolve) => setTimeout(resolve, 2000));
     expect(fs.existsSync(path.join(two, ".pi-fleet", "agents.json"))).toBe(false); // nothing of it ran
+    expect(await title()).toContain("project-one");
+  }, 120000);
+
+  it("gives agents the system proxy, and still reaches a local model", async () => {
+    const { userData, one } = folders("proxy");
+    const page = await launch(userData, { PI_FLEET_PROJECT: one, HTTPS_PROXY: "", HTTP_PROXY: "", NO_PROXY: "" }, ["--proxy-server=127.0.0.1:9"]);
+    await startCrew(page);
+    await page.fill("#msgInput", "@implementer [[run node -p process.env.HTTPS_PROXY]]");
+    await page.press("#msgInput", "Enter");
+    const log = async () => (await fetch(`http://127.0.0.1:${model.port}/__log`)).json() as Promise<{ conversation: string }[]>;
+    await step("the proxy in an agent's environment", until("the output", async () => (await log()).some((r) => r.conversation.includes("http://127.0.0.1:9")), 45000));
+  }, 120000);
+
+  it("shows the running app when it is started a second time", async () => {
+    const { userData, one } = folders("second-copy");
+    const page = await launch(userData, { PI_FLEET_PROJECT: one });
+    await page.waitForSelector("#conversation", { timeout: 60000 });
+    await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].minimize());
+    const args = [...(installed ? [] : [ROOT]), `--user-data-dir=${userData}`, ...(process.platform === "linux" ? ["--no-sandbox"] : [])];
+    const second = spawn(executable!, args, { env: { ...model.env, PI_FLEET_PROJECT: one } as NodeJS.ProcessEnv, stdio: "ignore" });
+    try {
+      await step("the second copy to leave", new Promise((resolve) => second.once("exit", resolve)), 30000);
+    } finally {
+      killTree(second.pid);
+    }
+    await until("the window to come back", () => app!.evaluate(({ BrowserWindow }) => !BrowserWindow.getAllWindows()[0].isMinimized()), 10000);
     expect(await title()).toContain("project-one");
   }, 120000);
 

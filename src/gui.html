@@ -279,6 +279,9 @@
     return { type: "assistant", blocks: blocks, ts: m.timestamp, usage: m.usage };
   }
 
+  // the same message, whether it came from the history or from live events
+  function itemKey(it) { return it.type === "user" ? "user:" + it.text : it.type + ":" + (it.ts || it.id); }
+
   function seedFromMessages(name, messages) {
     var conv = getConv(name);
     var items = [];
@@ -296,9 +299,14 @@
         else items.push({ type: "toolresult", id: m.toolCallId, name: m.toolName, text: extractText(m.content), isError: !!m.isError });
       }
     });
-    // what was sent while the history was on its way is newer than the history
-    var sent = conv.items.filter(function (it) { return it.type === "user" && it.text === conv.echo; });
-    conv.items = items.concat(sent);
+    // the history can arrive after live events, and may be older than they are, so it only adds to them
+    var live = conv.items.map(itemKey);
+    var older = items.filter(function (it) {
+      var at = live.indexOf(itemKey(it));
+      if (at >= 0) live.splice(at, 1);
+      return at < 0;
+    });
+    conv.items = older.concat(conv.items);
   }
 
   // apply a live RPC event to an agent's conversation model
@@ -836,12 +844,14 @@
     showUnreadTotal();
     if (!isChannelSel(name)) {
       // agent: seed the conversation from the agent's session if not already loaded
-      if (!state.conv[name] || !state.conv[name].items.length) {
+      var conv = getConv(name);
+      if (!conv.seeded) {
+        conv.seeded = true;
         rpc(name, "get_messages").then(function (r) {
           if (r.ok && r.result && r.result.data && r.result.data.messages) {
             seedFromMessages(name, r.result.data.messages);
             if (state.selected === name) renderConversation();
-          }
+          } else conv.seeded = false;
         });
       }
     }

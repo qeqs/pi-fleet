@@ -123,6 +123,50 @@ describe("messages", () => {
     expect(await page.locator(".msg.user .bubble").count()).toBe(1);
   });
 
+  it.each(["before", "after"])("keeps what happened while a slow history was on its way, when it was read %s the answer", async (read) => {
+    const { page } = await open(`slow-history-${read}`, agentsFor("alice"));
+    await ready(page, "alice");
+    await page.click('[data-chat="alice"]');
+    await page.waitForFunction(() => document.querySelector("#conversation .empty"));
+    await page.reload(); // from here the history reply is held back, as on a slow machine
+    let answered!: () => void;
+    const held = new Promise<void>((resolve) => (answered = resolve));
+    await page.route("**/rpc", async (route) => {
+      if (route.request().postDataJSON()?.command !== "get_messages") return route.continue();
+      if (read === "after") await held;
+      const reply = await route.fetch();
+      await held;
+      await route.fulfill({ response: reply });
+    });
+    await ready(page, "alice");
+    await page.click('[data-chat="alice"]');
+    await send(page, "[[md]]");
+    await page.waitForSelector("#conversation table");
+    const delivered = page.waitForResponse((r) => r.url().endsWith("/rpc"));
+    answered();
+    await delivered;
+    await page.waitForTimeout(200);
+    expect(await page.locator("#conversation th").count()).toBe(2);
+    expect(await page.locator(".msg.user .bubble").count()).toBe(1);
+  });
+
+  it("shows an agent's older history even after it has said something new", async () => {
+    const { page } = await open("older-history", agentsFor("alice"));
+    await ready(page, "alice");
+    await page.click('[data-chat="alice"]');
+    await send(page, "the first thing");
+    await page.locator("#conversation").getByText("ack from alice").waitFor();
+    await page.reload();
+    await ready(page, "alice");
+    await send(page, "@alice the second thing"); // alice speaks with its chat closed
+    await until("alice to answer", asked("alice", "the second thing"));
+    await page.waitForTimeout(500);
+    await page.click('[data-chat="alice"]');
+    await page.locator("#conversation").getByText("the first thing").waitFor();
+    await page.locator(".wake summary").getByText("Message from the fleet").waitFor(); // and the new one too
+    expect(await page.locator("#conversation").getByText("the first thing").count()).toBe(1);
+  });
+
   it("keeps the line breaks of a multi-line channel message", async () => {
     const { page } = await open("multiline", agentsFor("alice"));
     await ready(page, "alice");

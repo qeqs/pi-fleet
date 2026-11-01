@@ -97,6 +97,12 @@ describe("bridge (named-pipe transport, detached + re-attach)", () => {
     killTree(bridge.pid ?? 0);
   });
 
+  it.skipIf(process.platform === "win32")("lets only its owner reach its sockets", async () => {
+    (await PiRpcBridge.connect(pipeIn, pipeOut, bridge.pid!)).close();
+    await new Promise((resolve) => setTimeout(resolve, 200)); // they are closed up just after they open
+    for (const pipe of [pipeIn, pipeOut]) expect(fs.statSync(pipe).mode & 0o777).toBe(0o600);
+  });
+
   it("connects, prompts, survives disconnect, and re-attaches", async () => {
     // 1. connect + prompt
     const client = await PiRpcBridge.connect(pipeIn, pipeOut, bridge.pid!);

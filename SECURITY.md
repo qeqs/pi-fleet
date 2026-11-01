@@ -48,8 +48,9 @@ These were reviewed for 1.0 and accepted. Each has a reason, and most have a way
 ## The 1.0 review
 
 Covered: the web GUI, the desktop shell, bridges and sockets, the hub's files, process launches, agent
-names, what reaches the terminal, the CI and release workflows, and dependencies. Each fix below has
-a test that fails without it.
+names, what reaches the terminal, the CI and release workflows, and dependencies. Each code fix below
+has a test that fails without it. The dependency rows are checked by `npm audit`, and the workflow row
+by reading the workflows.
 
 | Severity | Finding | Fix |
 |---|---|---|

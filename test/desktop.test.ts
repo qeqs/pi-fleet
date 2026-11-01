@@ -210,6 +210,20 @@ describe.skipIf(!executable)("the desktop app", () => {
     expect(new URL(page.url()).hostname).toBe("127.0.0.1");
   }, 120000);
 
+  it("gives the page notifications and nothing else", async () => {
+    const { userData, one } = folders("permissions");
+    const page = await launch(userData, { PI_FLEET_PROJECT: one });
+    await page.waitForSelector("#conversation", { timeout: 60000 });
+    const asked = await page.evaluate(async () => ({
+      notifications: await Notification.requestPermission(),
+      midi: await navigator.requestMIDIAccess({ sysex: true }).then(
+        () => "granted",
+        () => "denied",
+      ),
+    }));
+    expect(asked).toEqual({ notifications: "granted", midi: "denied" });
+  }, 120000);
+
   it("reopens the last project by itself", async () => {
     const { userData, one } = folders("reopen");
     rememberProject(projectsOf(userData), one);

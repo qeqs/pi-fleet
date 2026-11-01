@@ -196,7 +196,8 @@ describe.skipIf(!executable)("the desktop app", () => {
     await app!.evaluate(({ Menu }) => {
       Menu.getApplicationMenu()!.items.find((i) => i.label === "File")!.submenu!.items.find((i) => i.label === "Open Project…")!.click();
     });
-    await until("the question", () => fs.existsSync(asked), 30000);
+    // the file shows up empty for a moment while it is written
+    await until("the question", () => fs.existsSync(asked) && fs.readFileSync(asked, "utf8").length > 0, 30000);
     expect(fs.readFileSync(asked, "utf8")).toContain("project-two");
     await new Promise((resolve) => setTimeout(resolve, 2000));
     expect(fs.existsSync(path.join(two, ".pi-fleet", "agents.json"))).toBe(false); // nothing of it ran

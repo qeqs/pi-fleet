@@ -15,6 +15,15 @@ fault that goes to the next release: a run that hands off and never ends.
 The rules of the 1.0 goal below still apply. New ideas go into **Next** in `ROADMAP.md`.
 
 ## Progress log
+- 2026-11-02: `v1.2.0` released, which fixes what the last check below found. The Release workflow
+  finished a task with each form of the install on each system. A candidate installer with the same
+  `src/`, in the app's own windows on hf-space-qwen38, took the same task to `APPROVE` with 7 agent
+  messages and 490k tokens, down from 15 and 805k. Neither the refusal nor the router's check fired,
+  and the planner still sent the work twice, which is in **Next**. A scripted weak model in that
+  installer was sent back to work after 31s of quiet. No real weak model has run this yet: the
+  owner reported `gpt-4o` chatting and not working, but OpenRouter's free limit was used up and the
+  account has no credit for it. CI's first run on macOS found a test expecting a Mac app to quit
+  with its window, and a run on Linux found a test reading a file while it was written.
 - 2026-11-01: Last check, on the published installer, in the app's own windows, on hf-space-qwen38.
   The first-run screen asked for a model and refused to start without one, the crew reached
   `APPROVE`, and its test passes, which closes this goal. The run also showed a real fault. After

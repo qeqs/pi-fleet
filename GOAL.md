@@ -15,6 +15,13 @@ fault that goes to the next release: a run that hands off and never ends.
 The rules of the 1.0 goal below still apply. New ideas go into **Next** in `ROADMAP.md`.
 
 ## Progress log
+- 2026-11-02: `v1.2.1` released with the fixes below. The Release workflow finished a task with each
+  form of the install on each system, and the published Windows installer, with its digest checked,
+  went onto a real machine, where the app opens a project and leaves nothing running when closed.
+  CI failed three times with no product change behind it: a fleet that took over 30 seconds to start
+  on macOS, playwright's close outlasting a cleanup hook on Linux, and a strict match on Windows that
+  found two wakes in a chat. The first two were fixed, and a new test watches the app quit in the
+  middle of a run. The third was relaxed, and why there were two wakes is in **Next**.
 - 2026-11-02: First runs on real weak models, on OpenRouter's free tier. On `liquid/lfm-2.5-2.6b:free`
   the planner wrote the page itself, to a made-up path above the project, reported it done and ended
   the chain, and a 429 ended the router's watch in silence. All of that is fixed, and the fixes met

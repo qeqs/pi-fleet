@@ -163,7 +163,7 @@ describe("messages", () => {
     await page.waitForTimeout(500);
     await page.click('[data-chat="alice"]');
     await page.locator("#conversation").getByText("the first thing").waitFor();
-    await page.locator(".wake summary").getByText("Message from the fleet").waitFor(); // and the new one too
+    await page.locator(".wake summary").getByText("Message from the fleet").first().waitFor(); // and the new one too
     expect(await page.locator("#conversation").getByText("the first thing").count()).toBe(1);
   });
 

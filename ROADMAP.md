@@ -187,6 +187,7 @@ The first run on a real weak model, `liquid/lfm-2.5-2.6b:free`, ended in a repor
 Not scheduled yet.
 
 - [ ] Run a crew on `openai/gpt-4o`, the model the owner saw talking and not working: it needs credit on OpenRouter
+- [ ] Find out why an agent's chat can show a wake twice: one Windows CI run found two where there should be one, and the log was out of reach
 - [ ] Find out which tools agents are missing: the built-in ones were enough in the real runs so far
 - [ ] Spend less on context: about 96% of the tokens in a real run were context sent again on each turn, so try prompt caching on providers that have it
 - [ ] Keep small jobs small: the planner still writes an OpenSpec proposal for a one-page app

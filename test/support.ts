@@ -21,7 +21,7 @@ export interface LlmRequest {
 export function firstMatch(proc: ChildProcess, re: RegExp): Promise<RegExpExecArray> {
   return new Promise((resolve, reject) => {
     let out = "";
-    const timer = setTimeout(() => reject(new Error(`no ${re} in:\n${out}`)), 30000);
+    const timer = setTimeout(() => reject(new Error(`no ${re} in:\n${out}`)), 45000); // a busy CI runner has taken over 30 seconds to start a fleet
     proc.stdout!.on("data", (d) => {
       out += d;
       const m = re.exec(out);

@@ -91,14 +91,22 @@ describe("the system proxy", () => {
 describe.skipIf(!executable)("the desktop app", () => {
   let model: Awaited<ReturnType<typeof startFakeModel>>;
   let app: ElectronApplication | undefined;
+  let appPid: number | undefined;
 
   beforeAll(async () => {
     model = await startFakeModel("pi fleet desktop");
   }, 60000);
 
+  // Cleaning up, not a check: on a Linux runner playwright's close waited out the whole hook, with
+  // nothing to show why. "quits in the middle of a run" below watches the app itself leave.
   afterEach(async () => {
-    await app?.close().catch(() => {});
+    const closing = app;
     app = undefined;
+    if (!closing) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([closing.close().catch(() => {}), new Promise((resolve) => (timer = setTimeout(resolve, 20000)))]);
+    clearTimeout(timer);
+    killTree(appPid);
   }, 60000);
 
   afterAll(() => {
@@ -124,6 +132,7 @@ describe.skipIf(!executable)("the desktop app", () => {
       env: { ...model.env, ...env } as Record<string, string>,
       timeout: 60000,
     });
+    appPid = app.process().pid;
     return app.firstWindow();
   }
 
@@ -218,6 +227,21 @@ describe.skipIf(!executable)("the desktop app", () => {
       throw new Error(`the command did not finish. The implementer's requests: ${JSON.stringify((await model.log()).filter((r) => r.agent === "implementer").slice(-3))}`);
     });
     expect((await ran())!.last, desktopLog.slice(0, 1500)).toContain("http://127.0.0.1:9");
+  }, 120000);
+
+  it("quits in the middle of a run, and takes the fleet with it", async () => {
+    const { userData, one } = folders("quit-in-a-run");
+    const page = await launch(userData, { PI_FLEET_PROJECT: one });
+    await startCrew(page);
+    await page.fill("#msgInput", "@implementer [[slow 30]]");
+    await page.press("#msgInput", "Enter");
+    await until("the run", () => model.log().then((all) => all.some((r) => r.agent === "implementer" && r.conversation.includes("[[slow 30]]"))), 30000);
+    const pid = new Hub(path.join(one, ".pi-fleet")).otherSupervisor()!;
+    const gone = new Promise((resolve) => app!.process().once("exit", resolve));
+    await app!.evaluate(({ app: electron }) => electron.quit()).catch(() => {}); // the app may leave before it answers
+    await step("the app to leave", gone, 30000);
+    app = undefined;
+    await until("the supervisor to go with it", () => !isPidAlive(pid), 15000);
   }, 120000);
 
   it("shows the running app when it is started a second time", async () => {

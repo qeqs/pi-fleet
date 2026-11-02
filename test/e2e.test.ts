@@ -926,7 +926,7 @@ describe("fleet end to end", () => {
 
     it("has nothing to ask when the crew finished with a real approval", async () => {
       const hub = await crew("approved");
-      ask(hub, "job-approved [[write approved.txt done]]");
+      ask(hub, "job-approved route=implementer [[write approved.txt done]]");
       await until("the verdict", () => hub.tailMessages(100).find((m) => m.from === "reviewer" && m.text === "APPROVE"));
       await sleep(1500 + 1500);
       expect(await checksOf("job-approved")).toEqual([]);
@@ -997,6 +997,41 @@ describe("fleet end to end", () => {
       await until("a check of the new job", async () => (await checksOf("job-second")).length === 1);
     }, 60000);
 
+    it("tells a person when the router cannot say if the crew has finished", async () => {
+      const hub = await crew("no-answer");
+      ask(hub, "job-silent route=planner [[watcher-fail 9]] [[say Noted.]]");
+      await until("the first check", async () => (await checksOf("job-silent")).length === 1);
+      const first = Date.now();
+      await until("the notice", () => notices(hub, "so it cannot tell if the crew has finished")[0]);
+      expect(Date.now() - first).toBeGreaterThan(2500); // a quiet spell before each try: a busy model needs the time
+      expect(notices(hub, "so it cannot tell if the crew has finished")[0].text).toMatch(/could not reach its model (.*Rate limited upstream)/);
+      expect(await checksOf("job-silent")).toHaveLength(3);
+      await sleep(2500);
+      expect(await checksOf("job-silent")).toHaveLength(3); // that was the last try
+    }, 60000);
+
+    it("says so too when the router's answer makes no sense", async () => {
+      const hub = await crew("nonsense");
+      ask(hub, "job-nonsense route=planner [[watcher-garbage]] [[say Noted.]]");
+      await until("the notice", () => notices(hub, "gave no usable answer, so it cannot tell")[0]);
+    }, 60000);
+
+    it("asks again when the router's model was busy", async () => {
+      const hub = await crew("busy");
+      ask(hub, "job-busy route=planner [[stalled implementer]] [[watcher-fail 1]] [[say Noted.]]");
+      await until("the reminder", () => notices(hub, "the router asked implementer to carry on")[0]);
+      expect(notices(hub, "so it cannot tell")).toEqual([]);
+    }, 60000);
+
+    it("does not count a write it refused as work done", async () => {
+      const hub = await crew("refused-write");
+      ask(hub, "job-refused route=planner [[write ../outside.txt done]]");
+      await until("the check", async () => (await checksOf("job-refused")).length === 1);
+      const used = (await checksOf("job-refused"))[0].last.split("\n").find((line: string) => line.startsWith("planner ("));
+      expect(used).not.toContain("write");
+      expect(fs.existsSync(path.join(tmp, "..", "outside.txt"))).toBe(false);
+    }, 60000);
+
     it("falls back on someone who can act when the router names nobody real", async () => {
       const hub = await crew("no-such-member");
       ask(hub, "job-ghost route=planner [[stalled ghost]] [[say Noted.]]");
@@ -1016,6 +1051,16 @@ describe("fleet end to end", () => {
       ask(hub, "job-kept route=planner [[repeat]]");
       await until("the check", async () => (await checksOf("job-kept")).length === 1);
       expect((await checksOf("job-kept"))[0].last).toContain("planner: Already done.");
+    }, 60000);
+
+    it("ends a planner's run at its handoff, and the job still gets done", async () => {
+      const hub = await crew("handoff-once", { PI_FLEET_QUIET_MS: "0" });
+      ask(hub, "job-once route=planner [[handoff-again]]");
+      await until("the verdict", () => hub.tailMessages(100).find((m) => m.from === "reviewer" && m.text === "APPROVE"));
+      await idle(hub, ["planner", "implementer", "reviewer"]);
+      expect(hub.tailMessages(100).filter((m) => m.from === "planner" && m.kind === "chat")).toHaveLength(1);
+      expect((await llmLog()).filter((r) => r.agent === "planner" && r.conversation.includes("job-once"))).toHaveLength(1);
+      expect(hub.tailMessages(100).filter((m) => m.from === "system" && /was stopped|model error/.test(m.text))).toEqual([]); // nothing went wrong
     }, 60000);
 
     it("does not take a reviewer's word when it looked at nothing", async () => {

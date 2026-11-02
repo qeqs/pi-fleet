@@ -606,7 +606,7 @@ describe("a model that is away for a while", () => {
     expect(retry.replyTo).toBe(asked.id);
     on.agent_start({}, ctx);
     on.message_end(prompt(formatInbox([retry], lookup(), hub.readChannels())), ctx);
-    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.tool_call({ toolName: "read", input: {} }, ctx);
     on.message_end({ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "APPROVE" }] } }, ctx);
     on.agent_settled({ aborted: false }, ctx);
     expect(hub.tailMessages(50).filter((m) => m.from === "bob")).toMatchObject([{ to: "dev", text: "APPROVE" }]);
@@ -715,6 +715,353 @@ describe("a run that keeps talking", () => {
   });
 });
 
+describe("a planner's handoff", () => {
+  type Handler = (event: unknown, ctx: { abort: () => void }) => void;
+  interface ToolResult {
+    content: { text: string }[];
+    terminate?: boolean;
+  }
+  type Tool = { execute: (id: string, params: Record<string, unknown>) => Promise<ToolResult> };
+
+  function load(role = "planner"): { on: Record<string, Handler>; tools: Record<string, Tool> } {
+    const on: Record<string, Handler> = {};
+    const tools: Record<string, Tool> = {};
+    const stub = {
+      on: (event: string, handler: Handler) => (on[event] = handler),
+      registerCommand: () => {},
+      registerTool: (t: Tool & { name: string }) => (tools[t.name] = t),
+    };
+    vi.stubEnv("PI_FLEET_DIR", dir);
+    vi.stubEnv("PI_FLEET_AGENT", "plan");
+    vi.stubEnv("PI_FLEET_ROLE", role);
+    fleetExtension(stub as unknown as ExtensionAPI);
+    vi.unstubAllEnvs();
+    on.agent_start({}, ctx);
+    return { on, tools };
+  }
+
+  let aborts = 0;
+  const ctx = { abort: () => aborts++ };
+  const sent = () => hub.tailMessages(50).filter((m) => m.from === "plan" && m.kind === "chat");
+  const notices = () => hub.tailMessages(50).filter((m) => m.from === "system");
+  const arrived = { message: { role: "user", content: [{ type: "text", text: "New fleet messages for you" }] } };
+  const join = (name: string, role: string) => hub.updateAgent(name, { name, pid: 1, cwd: ".", status: "idle", role });
+
+  beforeEach(() => {
+    aborts = 0;
+    join("plan", "planner");
+    join("impl", "implementer");
+    join("rev", "reviewer");
+    hub.upsertChannel({ name: "group", members: ["plan", "impl", "rev"] });
+  });
+
+  it.each([
+    ["a direct message", "fleet_send", { to: "impl", text: "build it" }],
+    ["a mention", "fleet_mention", { agents: ["impl"], text: "build it" }],
+    ["a group message that opens with the name", "fleet_send", { to: "group", text: "@impl build it" }],
+  ])("ends the run after %s, as a finished run with no notice", async (_how, tool, params) => {
+    const { on, tools } = load();
+    expect((await tools[tool].execute("1", params)).terminate).toBe(true);
+    on.turn_end({}, ctx);
+    expect(aborts).toBe(0); // an abort would show in its chat as a model error
+    expect(notices()).toEqual([]);
+  });
+
+  it("stops anything else it had planned for the same run", async () => {
+    const { on, tools } = load();
+    await tools.fleet_send.execute("1", { to: "impl", text: "build it" });
+    const res = (await on.tool_call({ toolName: "read", input: { path: "plan.md" } }, ctx)) as unknown as { block: boolean; reason: string; terminate: boolean };
+    expect(res.block).toBe(true);
+    expect(res.terminate).toBe(true);
+    expect(res.reason).toContain("impl has the work");
+  });
+
+  it("may use its tools until then", async () => {
+    const { on, tools } = load();
+    expect(await on.tool_call({ toolName: "read", input: { path: "plan.md" } }, ctx)).toBeUndefined();
+    await tools.fleet_send.execute("1", { to: "group", text: "Working out a plan" });
+    expect(await on.tool_call({ toolName: "read", input: { path: "plan.md" } }, ctx)).toBeUndefined();
+  });
+
+  it("goes on after a post that hands nothing to anyone", async () => {
+    const { on, tools } = load();
+    await tools.fleet_send.execute("1", { to: "group", text: "Working out a plan" });
+    const res = await tools.fleet_send.execute("2", { to: "group", text: "Once @impl reports back we are done" });
+    expect(res.terminate).toBe(false);
+    expect(await on.tool_call({ toolName: "read", input: {} }, ctx)).toBeUndefined();
+    expect(sent()).toHaveLength(2);
+  });
+
+  it("goes on after a question to the reviewer: the implementer still has nothing", async () => {
+    const { tools } = load();
+    expect((await tools.fleet_send.execute("1", { to: "rev", text: "Is a test needed?" })).terminate).toBe(false);
+  });
+
+  it("refuses a status post in the same turn as the handoff", async () => {
+    const { tools } = load();
+    await tools.fleet_send.execute("1", { to: "impl", text: "build it" });
+    const res = await tools.fleet_send.execute("2", { to: "group", text: "The plan is ready" });
+    expect(res.content[0].text).toContain("Not sent: impl already has the work");
+    expect(res.content[0].text).toContain("End your turn now");
+    expect(sent().map((m) => m.text)).toEqual(["build it"]);
+  });
+
+  it("refuses the same handoff again, by any route", async () => {
+    const { tools } = load();
+    await tools.fleet_send.execute("1", { to: "impl", text: "build it" });
+    for (const res of [
+      await tools.fleet_send.execute("2", { to: "impl", text: "build it, again" }),
+      await tools.fleet_mention.execute("3", { agents: ["impl"], text: "build it, again" }),
+      await tools.fleet_send.execute("4", { to: "group", text: "@impl build it, again" }),
+    ]) {
+      expect(res.content[0].text).toContain("Not sent");
+    }
+    expect(sent()).toHaveLength(1);
+  });
+
+  it("gives every implementer their part before it stops", async () => {
+    join("impl2", "implementer");
+    const { tools } = load();
+    expect((await tools.fleet_mention.execute("1", { agents: ["impl"], text: "build the front" })).terminate).toBe(false);
+    expect((await tools.fleet_mention.execute("2", { agents: ["impl2"], text: "build the back" })).terminate).toBe(true);
+    expect(sent()).toHaveLength(2);
+  });
+
+  it("is stopped with a notice if it will not end its turn while others are left", async () => {
+    join("impl2", "implementer");
+    const { on, tools } = load();
+    await tools.fleet_mention.execute("1", { agents: ["impl"], text: "build the front" });
+    for (let i = 0; i < 2; i++) await tools.fleet_send.execute(String(i), { to: "group", text: `plan is ready ${i}` });
+    on.turn_end({}, ctx);
+    expect(aborts).toBe(1);
+    expect(notices().map((m) => m.text).join()).toContain("kept sending messages");
+  });
+
+  it("does not wait for an agent that has stopped", async () => {
+    hub.updateAgent("impl2", { name: "impl2", pid: 1, cwd: ".", status: "stopped", role: "implementer" });
+    const { tools } = load();
+    expect((await tools.fleet_send.execute("1", { to: "impl", text: "build it" })).terminate).toBe(true);
+  });
+
+  it("does not wait for an agent that routes", async () => {
+    join("boss", "supervisor");
+    const { tools } = load();
+    expect((await tools.fleet_send.execute("1", { to: "impl", text: "build it" })).terminate).toBe(true);
+  });
+
+  it("can hand off again when something new arrives", async () => {
+    const { on, tools } = load();
+    await tools.fleet_send.execute("1", { to: "impl", text: "build it" });
+    on.message_end(arrived, ctx);
+    expect(await on.tool_call({ toolName: "read", input: {} }, ctx)).toBeUndefined();
+    await tools.fleet_send.execute("2", { to: "impl", text: "the review asks for one more thing" });
+    expect(sent()).toHaveLength(2);
+  });
+
+  it("ends a reviewer's run with its verdict, and only then", async () => {
+    join("rev2", "reviewer");
+    const { on, tools } = load("reviewer");
+    on.tool_call({ toolName: "read", input: {} }, ctx);
+    expect((await tools.fleet_send.execute("1", { to: "impl", text: "Which file is the page?" })).terminate).toBe(false);
+    expect((await tools.fleet_send.execute("2", { to: "group", text: "APPROVE: the test passes" })).terminate).toBe(true);
+    expect((await tools.fleet_mention.execute("3", { agents: ["impl"], text: "REQUEST CHANGES: add a test" })).terminate).toBe(true);
+  });
+
+  it("does not take an implementer's APPROVE for a verdict", async () => {
+    const { on, tools } = load("implementer");
+    on.tool_call({ toolName: "write", input: {} }, ctx);
+    expect((await tools.fleet_send.execute("1", { to: "rev", text: "APPROVE of this?" })).terminate).toBe(false);
+  });
+
+  it("does not end another role's run when everyone has heard from it", async () => {
+    const { on, tools } = load("implementer");
+    on.tool_call({ toolName: "write", input: {} }, ctx);
+    expect((await tools.fleet_mention.execute("1", { agents: ["impl", "rev"], text: "please review" })).terminate).toBe(false);
+    expect(await on.tool_call({ toolName: "read", input: {} }, ctx)).toBeUndefined();
+  });
+
+  it("keeps a planner's tools when there is nobody to hand off to", async () => {
+    hub.updateAgent("impl", { status: "stopped" });
+    const { on } = load();
+    expect(await on.tool_call({ toolName: "read", input: {} }, ctx)).toBeUndefined();
+  });
+
+  it("leaves other roles alone: an implementer may tell the reviewer twice", async () => {
+    const { on, tools } = load("implementer");
+    on.tool_call({ toolName: "write", input: {} }, ctx);
+    expect((await tools.fleet_send.execute("1", { to: "rev", text: "please review" })).terminate).toBe(false);
+    await tools.fleet_send.execute("2", { to: "rev", text: "and this part too" });
+    expect(await on.tool_call({ toolName: "read", input: {} }, ctx)).toBeUndefined();
+    expect(sent()).toHaveLength(2);
+  });
+});
+
+describe("a message the router hands on", () => {
+  const route = (to: string, role: string) => {
+    hub.updateAgent(to, { name: to, pid: 1, cwd: ".", status: "idle", role });
+    hub.updateAgent("impl", { name: "impl", pid: 1, cwd: ".", status: "idle", role: "implementer" });
+    hub.upsertChannel({ name: "group", members: [to, "impl"] });
+    const posted = hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "build it" });
+    applyRoute(hub, "router", hub.getChannel("group")!, posted, [to], "");
+    return hub.tailMessages(5).find((m) => m.to === to)!.text;
+  };
+
+  it("tells a planner to pass the work to the implementer", () => {
+    expect(route("plan", "planner")).toContain("do not do it yourself: give it to impl");
+  });
+
+  it("tells anyone else to do it", () => {
+    expect(route("rev", "reviewer")).toContain("do it now with your tools");
+  });
+
+  it("tells a planner with nobody to pass it to, to do it", () => {
+    hub.updateAgent("plan", { name: "plan", pid: 1, cwd: ".", status: "idle", role: "planner" });
+    hub.upsertChannel({ name: "group", members: ["plan"] });
+    const posted = hub.appendMessage({ from: "user", to: "group", kind: "chat", text: "build it" });
+    applyRoute(hub, "router", hub.getChannel("group")!, posted, ["plan"], "");
+    expect(hub.tailMessages(5).find((m) => m.to === "plan")!.text).toContain("do it now with your tools");
+  });
+});
+
+describe("a write that looks wrong", () => {
+  type Handler = (event: unknown, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
+  interface ToolResult {
+    content: { text: string }[];
+  }
+  type Tool = { execute: (id: string, params: Record<string, unknown>) => Promise<ToolResult> };
+
+  function load(role?: string): { on: Record<string, Handler>; tools: Record<string, Tool> } {
+    const on: Record<string, Handler> = {};
+    const tools: Record<string, Tool> = {};
+    const stub = {
+      on: (event: string, handler: Handler) => (on[event] = handler),
+      registerCommand: () => {},
+      registerTool: (t: Tool & { name: string }) => (tools[t.name] = t),
+    };
+    vi.stubEnv("PI_FLEET_DIR", dir);
+    vi.stubEnv("PI_FLEET_AGENT", "ann");
+    if (role) vi.stubEnv("PI_FLEET_ROLE", role);
+    fleetExtension(stub as unknown as ExtensionAPI);
+    vi.unstubAllEnvs();
+    return { on, tools };
+  }
+
+  const ctx = () => ({ cwd: dir, abort: () => {} });
+  const write = (on: Record<string, Handler>, file: string, toolName = "write") => on.tool_call({ toolName, input: { path: file, content: "x" } }, ctx());
+  const arrived = { message: { role: "user", content: [{ type: "text", text: "New fleet messages for you" }] } };
+  const outside = () => path.join(path.dirname(dir), "somewhere-else", "page.html");
+  const join = (name: string, role: string, status: "idle" | "stopped" = "idle") => hub.updateAgent(name, { name, pid: 1, cwd: ".", status, role });
+
+  it("lets a write inside the working directory through", async () => {
+    const { on } = load("implementer");
+    for (const file of ["page.html", "src/page.html", "./page.html", path.join(dir, "page.html"), "..page.html"]) expect(await write(on, file)).toBeUndefined();
+  });
+
+  it.each(["write", "edit"])("refuses a %s outside it once, and says where to write", async (tool) => {
+    const { on } = load("implementer");
+    const res = await write(on, outside(), tool);
+    expect(res?.block).toBe(true);
+    expect(res?.reason).toContain("outside your working directory");
+    expect(res?.reason).toContain(dir);
+    expect(await write(on, outside(), tool)).toBeUndefined();
+  });
+
+  it("refuses a way out with dots too", async () => {
+    const { on } = load("implementer");
+    expect((await write(on, "../page.html"))?.block).toBe(true);
+  });
+
+  it.runIf(process.platform === "win32")("reads a Git Bash path the way pi does", async () => {
+    const { on } = load("implementer");
+    const bash = (p: string) => `/${p[0].toLowerCase()}${p.slice(2).replaceAll("\\", "/")}`;
+    expect(await write(on, bash(path.join(dir, "page.html")))).toBeUndefined();
+    expect((await write(on, bash(outside())))?.block).toBe(true);
+  });
+
+  it("warns again about a file after something new arrives", async () => {
+    const { on } = load("implementer");
+    await write(on, outside());
+    await on.message_end(arrived, ctx());
+    expect((await write(on, outside()))?.block).toBe(true);
+  });
+
+  it("leaves other tools alone, wherever they point", async () => {
+    const { on } = load("implementer");
+    expect(await on.tool_call({ toolName: "read", input: { path: outside() } }, ctx())).toBeUndefined();
+  });
+
+  it("does not count a refused write as work", async () => {
+    const { on, tools } = load("implementer");
+    join("rev", "reviewer");
+    await write(on, outside());
+    expect((await tools.fleet_send.execute("1", { to: "rev", text: "done" })).content[0].text).toContain("you have not used a tool");
+  });
+
+  it("counts a write that goes through", async () => {
+    const { on, tools } = load("implementer");
+    join("rev", "reviewer");
+    await write(on, "page.html");
+    expect((await tools.fleet_send.execute("1", { to: "rev", text: "done" })).content[0].text).toContain("Sent to");
+  });
+
+  it("sends a planner's code to the implementer, once", async () => {
+    join("impl", "implementer");
+    const { on } = load("planner");
+    const res = await write(on, "page.html");
+    expect(res?.block).toBe(true);
+    expect(res?.reason).toContain("impl writes the code");
+    expect(res?.reason).toContain("fleet_mention");
+    expect(await write(on, "page.html")).toBeUndefined();
+  });
+
+  it("lets a planner write its plan", async () => {
+    join("impl", "implementer");
+    const { on } = load("planner");
+    expect(await write(on, "openspec/changes/parser/proposal.md")).toBeUndefined();
+  });
+
+  it("lets a planner do the work when nobody else can", async () => {
+    join("impl", "implementer", "stopped");
+    const { on } = load("planner");
+    expect(await write(on, "page.html")).toBeUndefined();
+  });
+
+  it("says outside before it says whose job it is", async () => {
+    join("impl", "implementer");
+    const { on } = load("planner");
+    expect((await write(on, outside()))?.reason).toContain("outside your working directory");
+  });
+
+  it("leaves other roles out of the implementer's files", async () => {
+    join("impl", "implementer");
+    const { on } = load("reviewer");
+    expect(await write(on, "page.html")).toBeUndefined();
+  });
+
+  it("does not count a tool a person declined as work", async () => {
+    vi.stubEnv("PI_FLEET_APPROVE", "bash");
+    vi.resetModules();
+    const { default: guarded } = await import("../src/extension/index.ts");
+    vi.unstubAllEnvs();
+    const on: Record<string, Handler> = {};
+    const tools: Record<string, Tool> = {};
+    const stub = {
+      on: (event: string, handler: Handler) => (on[event] = handler),
+      registerCommand: () => {},
+      registerTool: (t: Tool & { name: string }) => (tools[t.name] = t),
+    };
+    vi.stubEnv("PI_FLEET_DIR", dir);
+    vi.stubEnv("PI_FLEET_AGENT", "ann");
+    vi.stubEnv("PI_FLEET_ROLE", "implementer");
+    guarded(stub as unknown as ExtensionAPI);
+    vi.unstubAllEnvs();
+    join("rev", "reviewer");
+    const res = await on.tool_call({ toolName: "bash", input: { command: "ls" } }, { ...ctx(), ui: { confirm: async () => false } });
+    expect(res?.reason).toContain("declined");
+    expect((await tools.fleet_send.execute("1", { to: "rev", text: "done" })).content[0].text).toContain("you have not used a tool");
+  });
+});
+
 describe("a verdict left in an agent's own chat", () => {
   type Handler = (event: unknown, ctx: { abort: () => void }) => void;
   type Tool = { execute: (id: string, params: Record<string, unknown>) => Promise<unknown> };
@@ -743,7 +1090,7 @@ describe("a verdict left in an agent's own chat", () => {
   function run(on: Record<string, Handler>, prompt: string, answer: string, settled = { aborted: false }): void {
     on.agent_start({}, ctx);
     on.message_end({ message: { role: "user", content: [{ type: "text", text: prompt }] } }, ctx);
-    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.tool_call({ toolName: "read", input: {} }, ctx);
     on.message_end(said(answer), ctx);
     on.agent_settled(settled, ctx);
   }
@@ -767,7 +1114,7 @@ describe("a verdict left in an agent's own chat", () => {
     const { on } = load();
     on.agent_start({}, ctx);
     on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
-    on.tool_execution_start({ toolName: "fleet_agents" }, ctx);
+    on.tool_call({ toolName: "fleet_agents", input: {} }, ctx);
     on.message_end(said("APPROVE"), ctx);
     on.agent_settled({ aborted: false }, ctx);
     expect(fromRev()).toEqual([]);
@@ -805,7 +1152,7 @@ describe("a verdict left in an agent's own chat", () => {
     it("goes through once the agent has done something", async () => {
       const { on, tools } = load("impl", "implementer");
       wake(on);
-      on.tool_execution_start({ toolName: "write" }, ctx);
+      on.tool_call({ toolName: "write", input: {} }, ctx);
       await send(tools);
       expect(posted()).toHaveLength(1);
     });
@@ -813,14 +1160,14 @@ describe("a verdict left in an agent's own chat", () => {
     it("is not excused by reading, for an implementer", async () => {
       const { on, tools } = load("impl", "implementer");
       wake(on);
-      on.tool_execution_start({ toolName: "read" }, ctx);
+      on.tool_call({ toolName: "read", input: {} }, ctx);
       expect((await send(tools)).content[0].text).toContain("you have not used a tool");
     });
 
     it("is excused by reading, for a reviewer", async () => {
       const { on, tools } = load("rev", "reviewer");
       wake(on);
-      on.tool_execution_start({ toolName: "read" }, ctx);
+      on.tool_call({ toolName: "read", input: {} }, ctx);
       await send(tools);
       expect(posted()).toHaveLength(1);
     });
@@ -828,7 +1175,7 @@ describe("a verdict left in an agent's own chat", () => {
     it("needs doing again after the next wake", async () => {
       const { on, tools } = load("impl", "implementer");
       wake(on);
-      on.tool_execution_start({ toolName: "write" }, ctx);
+      on.tool_call({ toolName: "write", input: {} }, ctx);
       await send(tools);
       wake(on);
       expect((await send(tools)).content[0].text).toContain("you have not used a tool");
@@ -920,7 +1267,7 @@ describe("a verdict left in an agent's own chat", () => {
     on.agent_start({}, ctx);
     on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
     await tools.fleet_send.execute("1", { to: "nobody", text: "APPROVE" });
-    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.tool_call({ toolName: "read", input: {} }, ctx);
     on.message_end(said("APPROVE"), ctx);
     on.agent_settled({ aborted: false }, ctx);
     expect(fromRev()).toMatchObject([{ to: "group" }]);
@@ -942,7 +1289,7 @@ describe("a verdict left in an agent's own chat", () => {
     const { on } = load();
     on.agent_start({}, ctx);
     on.message_end({ message: { role: "user", content: [{ type: "text", text: routed("please review") }] } }, ctx);
-    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.tool_call({ toolName: "read", input: {} }, ctx);
     on.message_end({ message: { role: "assistant", stopReason: "error", errorMessage: "overloaded" } }, ctx);
     on.agent_start({}, ctx);
     on.message_end(said("APPROVE"), ctx);
@@ -996,7 +1343,7 @@ describe("a verdict left in an agent's own chat", () => {
     on.agent_start({}, ctx);
     on.message_end({ message: { role: "user", content: [{ type: "text", text: `Routing task for #dev.\nNew message (id ${msg.id.slice(0, 8)}): impl said: "please review"` }] } }, ctx);
     await tools.route.execute("1", { channel: "dev", respond: ["rev"], messageId: msg.id });
-    on.tool_execution_start({ toolName: "read" }, ctx);
+    on.tool_call({ toolName: "read", input: {} }, ctx);
     on.message_end(said("APPROVE"), ctx);
     on.agent_settled({ aborted: false }, ctx);
     expect(fromRev()).toMatchObject([{ to: "dev", text: "APPROVE" }]);
@@ -1060,6 +1407,8 @@ describe("what agents are told about messages", () => {
   it("makes the reviewer's verdict the end of the job", () => {
     expect(rolePrompt("reviewer")).toContain("APPROVE means nothing is left to check");
     expect(rolePrompt("planner")).toContain("leave the reviewer out");
+    expect(rolePrompt("planner")).toContain("fleet_mention"); // a direct message would keep the handoff out of the group
+    expect(rolePrompt("planner")).toContain("That handoff ends your run");
   });
 });
 

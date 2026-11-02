@@ -147,6 +147,7 @@ use `/diff impl1` and `/merge impl1` in the terminal. See [Parallel work](README
 | A hosted model answers `403`, or cannot be reached | The desktop app uses your system proxy. On the command line, set `HTTPS_PROXY` yourself. |
 | The agents stay idle after a task | Check for a notice in `#group`, such as a pause or a model error. Send any message to lift a pause. |
 | `the crew has stopped with the work unfinished` | The model was reminded twice and still only talked. Send a message to try again, or test a stronger model in Settings → Models. |
+| `so it cannot tell if the crew has finished` | The router's model did not answer three times, so nothing checked the work. Look at what the crew did, and send a message if it is not done. |
 | `answers, but did not use a tool` | The server ignores tools, so agents on it can write text but not work. Turn on tool calling in the server, or choose another model. |
 | `another supervisor is already running` | Another fleet is using this folder. Stop it, or pass `--dir` to use a separate one. |
 | Agents still running after you quit | `fleet list` shows them, and `fleet stop all` stops them. |

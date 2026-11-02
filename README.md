@@ -116,7 +116,13 @@ fleet> # refactor the parser and add tests
   nothing running or waiting, and no approval of someone else's work has ended the job, the router
   gets the task, the tools each agent really used and what was said. It either leaves the crew
   alone or sends one member back to work, at most twice, and then tells you that the work is
-  unfinished. This needs a supervisor, and it watches work given to a channel, not a direct message.
+  unfinished. If the router gives no answer it tries again, three times in all, and then tells you
+  that it cannot say. This needs a supervisor, and it watches work given to a channel, not a direct
+  message.
+- **Models that write in the wrong place**: a weak model can make up a path, and the write works, so
+  it reports success while the project stays empty. A `write` or `edit` outside an agent's working
+  folder is refused once and the agent is told where to write; if it tries again, it goes through.
+  A call that was refused or declined does not count as work.
 - **Message limits**: a message is refused, never cut, above `MAX_MESSAGE_LEN` chars (default
   2000, override with `PI_FLEET_MAX_MSG`): you see the reason, and an agent is told to split it.
   A run may send 6 messages with nothing new coming in, and is stopped if it ignores two refusals.
@@ -346,7 +352,8 @@ separator. `/new name [cwd] [model] [role]` accepts the same parts live from the
 The optional `role` segment injects a role-specific prompt preset:
 
 - **`planner`** — breaks goals into tasks, using openspec for work of several steps, and
-  gives them to an implementer in one message. Does not implement code itself.
+  gives them to an implementer in one message, which ends its run. Does not implement code itself:
+  with an implementer in the crew, a file it writes outside `openspec/` is refused once.
 - **`implementer`** — implements assigned tasks, follows the quality gate (validate
   before marking done), and @mentions the reviewer once when everything is done.
 - **`reviewer`** — acts only when asked. Inspects a change, runs `openspec validate`,

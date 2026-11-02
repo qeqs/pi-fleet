@@ -14,6 +14,9 @@ finished is true when what the person asked for is done or answered, or when the
 /** How often one job is reminded before a person is told. */
 export const MAX_NUDGES = 2;
 
+/** Checks with no answer from the router before a person is told. A free model is often busy for a minute. */
+export const MAX_CHECKS = 3;
+
 const RECENT_MESSAGES = 8;
 const MESSAGE_CHARS = 400;
 
@@ -23,13 +26,15 @@ export interface WatchedJob {
   /** an agent has run since: with no run there is nothing to check on */
   ran: boolean;
   nudges: number;
+  /** checks the router gave no answer to */
+  failedChecks: number;
   quietSince: number;
-  /** calls by agent and tool, since the message-level story can be false */
+  /** calls that did something, by agent and tool, since the message-level story can be false */
   tools: Record<string, Record<string, number>>;
 }
 
 export function startJob(task: FleetMessage): WatchedJob {
-  return { task, ran: false, nudges: 0, quietSince: Date.now(), tools: {} };
+  return { task, ran: false, nudges: 0, failedChecks: 0, quietSince: Date.now(), tools: {} };
 }
 
 export function noteTool(job: WatchedJob, agent: string, tool: string): void {
@@ -69,7 +74,7 @@ export interface WatchVerdict {
   say?: string;
 }
 
-/** The router's view, or null if it gave none: an unsure router should not wake anyone. */
+/** The router's view, or null if it gave none. */
 export function parseWatchReply(reply: string, channel: ChannelConfig): WatchVerdict | null {
   const json = /\{[\s\S]*\}/.exec(reply);
   if (!json) return null;

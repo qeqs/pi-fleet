@@ -18,6 +18,7 @@
 import { isRetryableAssistantError, Type, type AssistantMessage } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import path from "node:path";
 import { onPath } from "../programs.ts";
 import { Hub, shortId, messageTooLong, addressLabel, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, MAX_MESSAGE_LEN, type AgentInfo, type FleetMessage, type ChannelConfig, addressedAgents, mentionedAgents } from "../hub.ts";
 import { packageBinArgv } from "../rpc.ts";
@@ -60,6 +61,18 @@ const LOOK_TOOLS = new Set(["read", "grep", "find", "ls"]);
 export function countsAsWork(tool: string, role: string | undefined): boolean {
   if (TALK_TOOLS.has(tool)) return false;
   return role !== "implementer" || !LOOK_TOOLS.has(tool);
+}
+
+/** Who a planner gives its work to. Without one, it has to do the work itself. */
+function implementerIn(agents: Record<string, AgentInfo>): string | undefined {
+  return Object.values(agents).find((a) => a.role === "implementer" && a.status !== "stopped")?.name;
+}
+
+/** A path as seen from a folder, or undefined if it leads out of it. pi reads /c/x as C:\x on Windows, as Git Bash does. */
+export function pathInside(cwd: string, file: string): string | undefined {
+  const native = process.platform === "win32" ? file.replace(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?=\/)/i, "$1:") : file;
+  const from = path.relative(cwd, path.resolve(cwd, native));
+  return from === ".." || from.startsWith(`..${path.sep}`) || path.isAbsolute(from) ? undefined : from;
 }
 
 /** Tools this agent may only run once a person agrees (PI_FLEET_APPROVE, comma-separated). */
@@ -111,8 +124,8 @@ export function rolePrompt(role: string | undefined): string {
 
 Your role: PLANNER.
 - Break goals into concrete, verifiable tasks. Record them in the ${tb} task board if there are several. Check any worked example or number you put in a plan.
-- Give the work to the implementer in one message, with everything it needs. Do NOT implement code yourself, and leave the reviewer out: the implementer asks for review when there is something to review.
-- Then you are finished unless someone asks you something. The reviewer's verdict ends the job, so never announce that it is done.`;
+- Give the work to the implementer with fleet_mention, in one message with everything it needs, so that the group can see it. Do NOT implement code yourself, and leave the reviewer out: the implementer asks for review when there is something to review.
+- That handoff ends your run, so check your plan before you send it. You are then finished unless someone asks you something. The reviewer's verdict ends the job, so never announce that it is done.`;
     case "implementer":
       return `
 
@@ -302,8 +315,10 @@ export function routingPrompt(channel: ChannelConfig, m: FleetMessage, members: 
 export function applyRoute(hub: Hub, by: string, channel: ChannelConfig, target: FleetMessage, respond: string[], summary: string): string[] {
   if (summary.trim()) hub.setChannelSummary(channel.name, summary.trim());
   const sent = respond.filter((member) => member !== by); // a supervisor answers in its own turn, not by DM
+  const agents = hub.readAgents();
   for (const member of sent) {
-    hub.appendMessage({ from: by, to: member, kind: "chat", text: directedMessageText(channel, target, summary), replyTo: target.id });
+    const handOffTo = agents[member]?.role === "planner" ? implementerIn(agents) : undefined;
+    hub.appendMessage({ from: by, to: member, kind: "chat", text: directedMessageText(channel, target, summary, handOffTo), replyTo: target.id });
   }
   hub.appendMessage({ from: by, to: channel.name, kind: "activity", text: `routed to ${respond.join(", ") || "nobody"}` });
   return sent;
@@ -314,12 +329,13 @@ export function applyRoute(hub: Hub, by: string, channel: ChannelConfig, target:
  * the original message plus the channel summary, so the member has context
  * without reading the full transcript.
  */
-export function directedMessageText(channel: ChannelConfig, m: FleetMessage, summary: string): string {
+export function directedMessageText(channel: ChannelConfig, m: FleetMessage, summary: string, handOffTo?: string): string {
   const parts = [`[#${channel.name}] ${m.from} said: "${m.text}"`];
   if (summary && summary.trim() && summary.trim() !== "(no summary yet)") {
     parts.push(`Channel summary: ${summary.trim()}`);
   }
-  parts.push(`If this is work for you, do it now with your tools: a message does no work. Then respond with fleet_send to "${channel.name}" if a reply is needed.`);
+  if (handOffTo) parts.push(`If this is work, do not do it yourself: give it to ${handOffTo} now, with fleet_mention. If it only needs an answer, send that with fleet_send to "${channel.name}".`);
+  else parts.push(`If this is work for you, do it now with your tools: a message does no work. Then respond with fleet_send to "${channel.name}" if a reply is needed.`);
   return parts.join("\n");
 }
 
@@ -502,6 +518,8 @@ export default function (pi: ExtensionAPI) {
   let refusedSends = 0;
   let worked = false; // since the last wake
   let askedToWork = false; // this wake's reminder is spent
+  const handedTo = new Set<string>(); // who has work from this agent, since the last wake
+  const doubted = new Set<string>(); // files it has been warned about, since the last wake
   let braked = false; // the fleet has stopped this run
   const retryWaits = (process.env.PI_FLEET_RETRY_WAITS ?? RETRY_WAITS).split(",").filter(Boolean).map(Number);
   let failedRuns = 0; // in a row
@@ -615,6 +633,8 @@ export default function (pi: ExtensionAPI) {
       refusedSends = 0;
       worked = false;
       askedToWork = false;
+      handedTo.clear();
+      doubted.clear();
     }
     if (m.role === "assistant") {
       modelError = m.stopReason === "error" ? (m.errorMessage ?? "unknown error") : undefined;
@@ -639,10 +659,7 @@ export default function (pi: ExtensionAPI) {
   }
   pi.on("turn_start", watchModel);
   pi.on("message_update", watchModel);
-  pi.on("tool_execution_start", (event) => {
-    clearTimeout(stallTimer);
-    if (countsAsWork(event.toolName, role)) worked = true;
-  });
+  pi.on("tool_execution_start", () => clearTimeout(stallTimer));
 
   /** The run's fleet calls repeat with no end in sight. */
   function repeatsItself(message: unknown): boolean {
@@ -658,11 +675,37 @@ export default function (pi: ExtensionAPI) {
     return repeated;
   }
 
+  // A weak model writes to a path it made up, or does the implementer's job itself, and reports the
+  // work done. The person then finds nothing, or work nobody looked at. Refused once per file and
+  // wake, because it may be what was asked for.
+  function doubtfulWrite(tool: string, input: { path?: unknown }, cwd: string): string | undefined {
+    if ((tool !== "write" && tool !== "edit") || typeof input.path !== "string" || doubted.has(input.path)) return undefined;
+    const from = pathInside(cwd, input.path);
+    const implementer = role === "planner" && !from?.startsWith(`openspec${path.sep}`) ? implementerIn(hub.readAgents()) : undefined;
+    if (from !== undefined && !implementer) return undefined;
+    doubted.add(input.path);
+    if (from === undefined) return `Not written: ${input.path} is outside your working directory, ${cwd}. Use a path relative to it. If you really mean that place, write it again.`;
+    return `Not written: ${implementer} writes the code, not you. Give it the work with fleet_mention. If this file really is part of your plan, write it again.`;
+  }
+
+  // pi reports a call before it asks here, so this is where a refused call can still not count as work.
   pi.on("tool_call", async (event, ctx) => {
-    if (!APPROVE_TOOLS.has(event.toolName)) return undefined;
-    const allowed = await ctx.ui.confirm(`Allow ${event.toolName}?`, JSON.stringify(event.input).slice(0, 300), { signal: ctx.signal });
-    return allowed ? undefined : { block: true, reason: "A person declined this tool call." };
+    if (handoffDone()) return { block: true, reason: `Not done: ${[...handedTo].join(", ")} has the work, so your run is over.`, terminate: true };
+    const doubt = doubtfulWrite(event.toolName, event.input as { path?: unknown }, ctx.cwd);
+    if (doubt) return { block: true, reason: doubt };
+    if (APPROVE_TOOLS.has(event.toolName)) {
+      const allowed = await ctx.ui.confirm(`Allow ${event.toolName}?`, JSON.stringify(event.input).slice(0, 300), { signal: ctx.signal });
+      if (!allowed) return { block: true, reason: "A person declined this tool call." };
+    }
+    if (countsAsWork(event.toolName, role)) worked = true;
+    return undefined;
   });
+
+  /** Everyone who can take a planner's work has it. The implementer brings in the reviewer. */
+  function handoffDone(): boolean {
+    if (role !== "planner" || handedTo.size === 0) return false;
+    return Object.values(hub.readAgents()).every((a) => a.name === name || handedTo.has(a.name) || a.status === "stopped" || a.role === "reviewer" || a.role === "supervisor");
+  }
 
   // Some models never end a run on their own. Counted here, not in the supervisor,
   // so the limits also hold in detached mode, when nobody is watching.
@@ -729,6 +772,17 @@ export default function (pi: ExtensionAPI) {
     return refused("Not sent: you have not used a tool on this yet, and a message does no work. Do what was asked now, with your tools, in this run, then report what you did. If it really needs no work, or you are blocked, send this again.");
   };
 
+  // A planner that stays on after its handoff goes over its plan again and sends the same work
+  // a second time, and its status posts wake the others. That was half the tokens of a real run.
+  const alreadyHandedOff = (targets: string[]) => {
+    if (role !== "planner" || handedTo.size === 0 || targets.some((t) => !handedTo.has(t))) return undefined;
+    refusedSends++;
+    return refused(`Not sent: ${[...handedTo].join(", ")} already has the work. End your turn now: ${WOKEN_BY_REPLY}`);
+  };
+
+  // Nothing is left to say after these, and a real reviewer went on to send the same APPROVE twice.
+  const lastWord = (text: string) => handoffDone() || (role === "reviewer" && VERDICT.test(text));
+
   const fleetSend = defineTool({
     name: "fleet_send",
     label: "Fleet send",
@@ -751,11 +805,16 @@ export default function (pi: ExtensionAPI) {
       const notYet = nothingDoneYet();
       if (notYet) return notYet;
       if (sentSinceWake >= SEND_LIMIT) return overSendLimit();
+      const targets = hub.targetKind(to) === "agent" ? [to] : addressedAgents({ from: name, text: params.text });
+      const again = alreadyHandedOff(targets);
+      if (again) return again;
       const msg = hub.appendMessage({ from: name, to, kind: "chat", text: params.text, replyTo: params.replyTo });
       sentSinceWake++;
+      for (const t of targets) handedTo.add(t);
       return {
         content: [{ type: "text" as const, text: `Sent to ${addressLabel(to, hub.readChannels())}: ${msg.text}${END_OF_HANDOFF}` }],
         details: { messageId: msg.id, to },
+        terminate: lastWord(params.text),
       };
     },
   });
@@ -836,6 +895,8 @@ export default function (pi: ExtensionAPI) {
       const notYet = nothingDoneYet();
       if (notYet) return notYet;
       if (sentSinceWake >= SEND_LIMIT) return overSendLimit();
+      const again = alreadyHandedOff(targets);
+      if (again) return again;
       const msg = hub.appendMessage({
         from: name,
         to: "group",
@@ -844,9 +905,11 @@ export default function (pi: ExtensionAPI) {
         replyTo: params.replyTo,
       });
       sentSinceWake++;
+      for (const t of targets) handedTo.add(t);
       return {
         content: [{ type: "text" as const, text: `Mentioned ${mentions} in #group: ${msg.text}${END_OF_HANDOFF}` }],
         details: { messageId: msg.id, mentioned: targets },
+        terminate: lastWord(params.text),
       };
     },
   });

@@ -119,6 +119,12 @@ describe("directedMessageText", () => {
     expect(t).toContain("Previously: discussed the API.");
     expect(t).toContain("fleet_send");
   });
+  it("tells a planner to pass work on, not to do it", () => {
+    const m: FleetMessage = { id: "1", ts: 0, from: "user", to: "dev", kind: "chat", text: "build the parser" };
+    const t = directedMessageText(CH, m, "", "impl");
+    expect(t).toContain("do not do it yourself: give it to impl");
+    expect(t).not.toContain("do it now with your tools");
+  });
   it("omits the summary line when there is none", () => {
     const m: FleetMessage = { id: "1", ts: 0, from: "user", to: "dev", kind: "chat", text: "hi" };
     const t = directedMessageText(CH, m, "");

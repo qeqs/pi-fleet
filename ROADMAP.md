@@ -169,14 +169,26 @@ chat and tag each other and do no work.
 
 **Done when:** the `v1.2.0` release passes on Windows, Linux and macOS, and its installer takes a task to `APPROVE` on a real model.
 
+## 10. What a real weak model did
+
+The first run on a real weak model, `liquid/lfm-2.5-2.6b:free`, ended in a report of success, an empty project folder and silence.
+
+- [x] Stop a planner going on after its handoff: on a real model it checked its plan again and sent the same work a second time, and its status posts woke the implementer and the reviewer. It spent 257k of the run's 490k tokens
+- [x] Refuse a write outside the working folder, once: the model made up a path, the write worked, and it reported the page done
+- [x] Send a planner's code to the implementer: the wake text told it to do the work itself, and nobody reviewed it
+- [x] Count only tool calls that went through: a refused write looked like work to the router and to the refusal
+- [x] Keep watching when the router's own model fails: one 429 ended the watch in silence
+- [ ] Take a task to `APPROVE` on a real weak model
+
+**Done when:** a crew on a real weak model takes a task to `APPROVE`, with the work in the project folder.
+
 ## Next
 
 Not scheduled yet.
 
-- [ ] Run a crew on a real weak model: the refusal and the watcher have only met a scripted one, and `openai/gpt-4o` needs credit on OpenRouter
+- [ ] Run a crew on `openai/gpt-4o`, the model the owner saw talking and not working: it needs credit on OpenRouter
 - [ ] Find out which tools agents are missing: the built-in ones were enough in the real runs so far
 - [ ] Spend less on context: about 96% of the tokens in a real run were context sent again on each turn, so try prompt caching on providers that have it
-- [ ] Stop a planner going on after its handoff: on a real model it checked its plan again and sent the same work a second time, and its status posts woke the implementer and the reviewer. It spent 257k of the run's 490k tokens
 - [ ] Keep small jobs small: the planner still writes an OpenSpec proposal for a one-page app
 - [ ] Publish to the npm registry, which needs the owner's account
 - [ ] Sign the installers, which needs certificates in the owner's name

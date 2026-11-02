@@ -19,6 +19,8 @@
 //                             must do something it answers by only talking
 //   [[router-slow N]]      -> the router takes N seconds and gives no usable answer
 //   [[watcher-slow N]]     -> the watching router takes N seconds and gives no usable answer
+//   [[watcher-garbage]]    -> the watching router answers with no JSON
+//   [[watcher-fail N]]     -> the watching router's model fails N times for this job, then answers
 //   model "fake/no-tools"  -> a server that ignores tools: only ever writes text
 //   model "fake/tool-refused" -> refuses the tool test because it has no tools
 //   model "fake/cut-off"   -> fails the tool test for a reason that says nothing about tools
@@ -29,6 +31,7 @@
 //   [[runon]]              -> never ends the run: every turn calls another tool
 //   [[repeat]]             -> never ends the run: every turn posts the same message
 //   [[chatter]]            -> never ends the run: every turn posts a slightly different message
+//   [[handoff-again]]      -> never ends the run: every turn hands the work to the implementer
 //   [[flaky N]]            -> anywhere in the conversation: this agent's first N requests fail
 //                             with a 503, then it answers as usual
 //   [[pingpong a b]]       -> a and b keep sending each other this same message
@@ -100,6 +103,13 @@ function decide(agent, messages, model) {
   const slowly = /\[\[(router|watcher)-slow (\d+)\]\]/.exec(textOf(last));
   if (slowly?.[1] === agent) return { kind: "slow", seconds: Number(slowly[2]) };
   if (agent === "router") return say(routerReply(textOf(last)));
+  if (agent === "watcher" && textOf(last).includes("[[watcher-garbage]]")) return say("I could not say.");
+  const failing = agent === "watcher" && /\[\[watcher-fail (\d+)\]\]/.exec(textOf(last));
+  if (failing) {
+    const job = textOf(last).split("\n")[0];
+    outages.set(job, (outages.get(job) ?? 0) + 1);
+    if (outages.get(job) <= Number(failing[1])) return { kind: "fail", message: "Rate limited upstream." };
+  }
   if (agent === "watcher") return say(watcherReply(textOf(last)));
   if (model === "no-tools") return say("I cannot open files, but I am sure it is fine.");
   if (agent === "tool-test" && model === "tool-refused") return { kind: "fail", message: "No endpoints found that support tool use." };
@@ -118,6 +128,7 @@ function decide(agent, messages, model) {
   if (lastUser.includes("[[tool-then-slow]]")) return last.role === "tool" ? { kind: "slow", seconds: 4 } : tool("fleet_agents", {});
   if (lastUser.includes("[[repeat]]")) return tool("fleet_send", { to: "group", text: "Already done." });
   if (lastUser.includes("[[chatter]]")) return tool("fleet_send", { to: "group", text: `Done, checked ${messages.length} times.` });
+  if (lastUser.includes("[[handoff-again]]")) return tool("fleet_mention", { agents: ["implementer"], text: "Please implement the feature." });
   const inspect = /\[\[inspect ([^\]]+)\]\]/.exec(lastUser);
   if (inspect) return last.role === "tool" ? say(inspect[1]) : tool("bash", { command: "echo looked" });
   // the way of a weak model: report first, and work only when told to

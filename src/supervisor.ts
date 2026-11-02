@@ -15,7 +15,7 @@ import { loadFleetConfig, agentSpecFromConfig, saveFleetConfig, configPath, isBu
 import { expandTemplate, templateNames, templateDescription, TEMPLATES } from "./templates.ts";
 import { discoverExtensions, readMcpConfig, writeMcpConfig } from "./pi-resources.ts";
 import { computeWakes } from "./wakes.ts";
-import { MAX_NUDGES, WATCH_PROMPT, closesJob, noteTool, parseWatchReply, startJob, watchPrompt, type WatchedJob } from "./watch.ts";
+import { MAX_CHECKS, MAX_NUDGES, WATCH_PROMPT, closesJob, noteTool, parseWatchReply, startJob, watchPrompt, type WatchedJob } from "./watch.ts";
 import { availableModels, probeContextWindow, resolveLean, spawnAgent, type AgentHandle } from "./spawn.ts";
 import { RestartPolicy } from "./restart.ts";
 import { describeQuestion, parseAnswer, questionFrom, type Answer, type Question } from "./questions.ts";
@@ -303,11 +303,16 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
       return;
     }
     const known = Object.values(hub.readAgents());
-    const reply = await routerFor(channel, WATCH_PROMPT).ask(watchPrompt(current, channel, known, hub.tailMessages(200))).catch(() => "");
+    const router = routerFor(channel, WATCH_PROMPT);
+    const reply = await router.ask(watchPrompt(current, channel, known, hub.tailMessages(200))).catch((err: Error) => {
+      router.failure = err.message;
+      return "";
+    });
     countRouterSpend();
     if (job !== current) return; // a person wrote in the meantime
     const verdict = parseWatchReply(reply, channel);
-    if (!verdict || verdict.finished) {
+    if (!verdict) return noAnswer(current, channel, router.failure);
+    if (verdict.finished) {
       job = null;
       return;
     }
@@ -325,6 +330,15 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
     current.nudges++;
     hub.appendMessage({ from: "system", to: channel.name, kind: "system", text: `the crew went quiet with the work unfinished, so the router asked ${next} to carry on (${current.nudges} of ${MAX_NUDGES})` });
     hub.appendMessage({ from: ROUTER, to: next, kind: "chat", text: `The team has gone quiet and the work is not finished. ${what} Do it now with your tools, in this run: a message does no work.`, replyTo: current.task.id });
+  }
+
+  /** No answer says nothing about the crew, and to drop the job would leave a person looking at a silent chat. */
+  function noAnswer(current: WatchedJob, channel: ChannelConfig, failure: string | null): void {
+    current.quietSince = Date.now();
+    if (++current.failedChecks < MAX_CHECKS) return;
+    job = null;
+    const why = failure ? `could not reach its model (${failure.replace(/\.$/, "")})` : "gave no usable answer";
+    hub.appendMessage({ from: "system", to: channel.name, kind: "system", text: `the router ${why}, so it cannot tell if the crew has finished. If the work is not done, send a message to continue.` });
   }
 
   function watchCrew(): void {
@@ -345,9 +359,9 @@ export async function cmdUp(args: FleetArgs, baseCwd: string, headless = false) 
         if (job) job.ran = true;
         print(`  ⟳ [${name}] working…`);
       } else if (t === "tool_execution_start") {
-        const tool = String(rec.toolName ?? "");
-        if (job) noteTool(job, name, tool);
-        print(`  ⚙ [${name}] ${tool}`);
+        print(`  ⚙ [${name}] ${String(rec.toolName ?? "")}`);
+      } else if (t === "tool_execution_end") {
+        if (job && !rec.isError) noteTool(job, name, String(rec.toolName ?? "")); // a refused call did nothing
       } else if (t === "agent_settled") {
         if (job) job.quietSince = Date.now();
         print(`  ✓ [${name}] settled — ${listAgentsLine()}`);

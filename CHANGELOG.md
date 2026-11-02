@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+The first run on a real weak model, `liquid/lfm-2.5-2.6b:free`, looked like success and was not. The
+planner wrote the page itself, to a path it made up, and reported it done. The project folder stayed
+empty, nobody reviewed anything, and the router, rate limited, dropped the job without a word.
+
+- A planner's run ends with its handoff. Once everyone who can take the work has it, the run stops,
+  as a finished run with no error and no notice. Until then it may not send the same work again or
+  post a status that wakes the others. It also hands off with `fleet_mention`, so the group sees it.
+  One real task went from 490k tokens to 127k, and the planner's share from 257k to 22k. A reviewer's
+  verdict ends its run the same way, since a real one sent the same `APPROVE` twice.
+- A write outside an agent's working folder is refused once, and the agent is told where to write.
+  It goes through if the agent tries again, since a person may have asked for it.
+- A planner with an implementer in the crew is told to pass the work on, not to do it, and a file it
+  writes outside `openspec/` is refused once. The text that wakes agents used to tell it to do the
+  work itself.
+- A refused or declined tool call no longer counts as work. pi reports a call before it can be
+  refused, so an agent could fail to write a file and still pass as having done something.
+- When the router cannot say if a crew has finished, it tries again after another quiet spell, three
+  times in all, and then tells you. Before, a busy or failing model ended the watch in silence.
+
 ## 1.2.0
 
 - A verdict reaches the group even if a model leaves it in its own chat. When an agent woken by a

@@ -15,6 +15,15 @@ fault that goes to the next release: a run that hands off and never ends.
 The rules of the 1.0 goal below still apply. New ideas go into **Next** in `ROADMAP.md`.
 
 ## Progress log
+- 2026-11-02: First runs on real weak models, on OpenRouter's free tier. On `liquid/lfm-2.5-2.6b:free`
+  the planner wrote the page itself, to a made-up path above the project, reported it done and ended
+  the chain, and a 429 ended the router's watch in silence. All of that is fixed, and the fixes met
+  the same model: its next write, to `/cwd/converter.html`, was refused. No run on a weak model has
+  reached `APPROVE`: that model was rate limited upstream, and a second one,
+  `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, hit the limit of 50 free requests a day
+  after 4 calls. Same day, on hf-space-qwen38, with the task of the 1.2 run: `APPROVE` in 2 minutes
+  with 127k tokens against 490k, the planner's share 22k against 257k, in 2 model calls, and one
+  handoff, with no error in its chat. The page's test passes.
 - 2026-11-02: `v1.2.0` released, which fixes what the last check below found. The Release workflow
   finished a task with each form of the install on each system. A candidate installer with the same
   `src/`, in the app's own windows on hf-space-qwen38, took the same task to `APPROVE` with 7 agent

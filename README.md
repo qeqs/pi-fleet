@@ -147,7 +147,7 @@ fleet> # refactor the parser and add tests
 [GETTING_STARTED.md](GETTING_STARTED.md) goes from nothing to a finished task. In short:
 
 ```bash
-npm install -g github:qeqs/pi-fleet#v1.2.0
+npm install -g github:qeqs/pi-fleet#v1.2.1
 ```
 
 or use a desktop installer from the [releases page](https://github.com/qeqs/pi-fleet/releases/latest),

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1
 
 The first run on a real weak model, `liquid/lfm-2.5-2.6b:free`, looked like success and was not. The
 planner wrote the page itself, to a path it made up, and reported it done. The project folder stayed

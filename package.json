@@ -1,6 +1,6 @@
 {
   "name": "pi-fleet",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "type": "module",
   "description": "Multi-agent fleet for pi: named concurrent agent sessions, group chat, inter-agent messaging, OpenSpec coordination",
   "license": "Apache-2.0",
@@ -28,8 +28,8 @@
     "dist": "electron-builder --publish never"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^1.0.0",
-    "@earendil-works/pi-coding-agent": "^1.2.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "@fission-ai/openspec": "^1.15.0",
     "tsx": "^4.19.0"
   },

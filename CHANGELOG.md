@@ -1,7 +1,14 @@
 # Changelog
 
-## 1.2.2
+## 1.2.3
 
+1.2.2 was tagged and never published: its release check found that installing with npm from GitHub
+no longer worked.
+
+- `npm install -g github:qeqs/pi-fleet` works again. pi 1.5.0 came out a day after 1.2.1 and changed
+  its API, and an install from GitHub takes the newest pi instead of the tested one, so `fleet`
+  failed to start. pi is now pinned to 1.4.0, the version the release is tested with. The desktop
+  installers were not affected.
 - Questions an agent asks with `ask_user`, from the pix-ask package, now reach you. pix-ask draws
   them with a terminal widget that pi's RPC mode cannot show, so each came back as
   "User cancelled the questionnaire" a millisecond later, unseen. The fleet now asks them one at a

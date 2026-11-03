@@ -193,6 +193,7 @@ Not scheduled yet.
 - [ ] Spend less on context: about 96% of the tokens in a real run were context sent again on each turn, so try prompt caching on providers that have it
 - [ ] Keep small jobs small: the planner still writes an OpenSpec proposal for a one-page app
 - [ ] Refuse a report sent twice: an agent on the local model sent the same "Done" to the group twice in one run
+- [ ] Move to pi 1.5, which replaced TypeBox's `Type` with its own schema builders: pi is pinned to 1.4.0 until then
 - [ ] Publish to the npm registry, which needs the owner's account
 - [ ] Sign the installers, which needs certificates in the owner's name
 

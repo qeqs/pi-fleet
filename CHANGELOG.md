@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.2
 
 - Questions an agent asks with `ask_user`, from the pix-ask package, now reach you. pix-ask draws
   them with a terminal widget that pi's RPC mode cannot show, so each came back as

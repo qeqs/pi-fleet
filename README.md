@@ -96,9 +96,10 @@ fleet> # refactor the parser and add tests
   that re-attach keep the turn limit they started with.
 - **Questions and approvals**: when an agent asks something (`ctx.ui.confirm`, `select`, `input`
   or `editor`), it shows as waiting, the question appears at the top of the GUI and in `#group`,
-  and you answer there or with `/answer name text`. `--approve bash,write` (or `approve` per agent
-  in `fleet.json`) makes those tools ask first; declined calls are blocked. Nobody can answer
-  in detached mode, so an agent that asks waits until a supervisor re-attaches.
+  and you answer there or with `/answer name text`. A questionnaire from pix-ask's `ask_user`, which
+  pi cannot draw in RPC mode, comes one question at a time the same way. `--approve bash,write`
+  (or `approve` per agent in `fleet.json`) makes those tools ask first; declined calls are blocked.
+  Nobody can answer in detached mode, so an agent that asks waits until a supervisor re-attaches.
 - **Failures are visible**: a crashed agent is marked stopped with a notice in `#group`, and
   its channels move to a running member. A run that ends in a model error says so, and so does
   a model that stays silent mid-turn for 5 minutes (`PI_FLEET_STALL_MS`, `0` turns it off; only
@@ -473,6 +474,7 @@ src/templates.ts       named fleet presets (--template sdlc|pair|solo)
 src/gui.ts             web UI server (SSE + POST, no deps)
 src/gui.html           single-page web UI
 src/extension/index.ts pi extension loaded by each agent (tools, prompt, poller, roles)
+src/extension/ask-user.ts  pix-ask's ask_user questionnaires, asked as plain dialogs
 electron/main.mjs      Electron desktop shell (npm run desktop)
 electron/projects.mjs  the folders the desktop app has opened
 scripts/               installs a release the way a person would, and finishes a task in it

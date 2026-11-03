@@ -1620,3 +1620,54 @@ describe("createPoller", () => {
     expect(wakes[0]).toContain("while detached");
   });
 });
+
+describe("an ask_user questionnaire pi cannot show", () => {
+  type Handler = (event: unknown, ctx: unknown) => Promise<{ content?: { text: string }[]; details?: unknown; isError?: boolean } | undefined> | void;
+
+  function load(): Record<string, Handler> {
+    const on: Record<string, Handler> = {};
+    const stub = { on: (event: string, handler: Handler) => (on[event] = handler), registerCommand: () => {}, registerTool: () => {} };
+    vi.stubEnv("PI_FLEET_DIR", dir);
+    vi.stubEnv("PI_FLEET_AGENT", "ann");
+    fleetExtension(stub as unknown as ExtensionAPI);
+    vi.unstubAllEnvs();
+    return on;
+  }
+
+  const input = { questions: [{ question: "Which direction?", header: "Next work", options: [{ label: "Caching", description: "Cheaper runs." }, { label: "Marketplace", description: "More tools." }] }] };
+  const declined = { toolName: "ask_user", input, content: [{ type: "text", text: "User cancelled the questionnaire" }], details: { answers: [], cancelled: true }, isError: false };
+  const asked: string[][] = [];
+  const ctx = (signal?: AbortSignal) => ({ signal, ui: { select: async (_title: string, options: string[]) => (asked.push(options), options[1]), input: async () => undefined } });
+
+  beforeEach(() => {
+    asked.length = 0;
+  });
+
+  it("asks the questions as dialogs and gives the model the answer", async () => {
+    const on = load();
+    await on.tool_call({ toolName: "ask_user", input }, ctx());
+    on.ui_prompt_start({ type: "ui_prompt_start", kind: "custom" }, ctx());
+    const result = await on.tool_result(declined, ctx());
+    expect(asked).toEqual([["Caching — Cheaper runs.", "Marketplace — More tools.", "Answer in my own words"]]);
+    expect(result).toMatchObject({ content: [{ text: 'User answered: "Which direction?"="Marketplace".' }], isError: false });
+  });
+
+  it("leaves a questionnaire alone when the tool showed its own dialog", async () => {
+    const on = load();
+    await on.tool_call({ toolName: "ask_user", input }, ctx());
+    on.ui_prompt_start({ type: "ui_prompt_start", kind: "select" }, ctx());
+    expect(await on.tool_result(declined, ctx())).toBeUndefined();
+    await on.tool_call({ toolName: "ask_user", input }, ctx());
+    expect(await on.tool_result(declined, ctx())).not.toBeUndefined(); // the next call starts afresh
+  });
+
+  it("leaves answers, stopped runs and other tools alone", async () => {
+    const on = load();
+    await on.tool_call({ toolName: "ask_user", input }, ctx());
+    expect(await on.tool_result({ ...declined, details: { answers: [{ questionIndex: 0 }], cancelled: false } }, ctx())).toBeUndefined();
+    expect(await on.tool_result(declined, ctx(AbortSignal.abort()))).toBeUndefined();
+    expect(await on.tool_result({ ...declined, toolName: "other_tool" }, ctx())).toBeUndefined();
+    expect(await on.tool_result({ ...declined, input: { questions: "which?" } }, ctx())).toBeUndefined();
+    expect(asked).toEqual([]);
+  });
+});

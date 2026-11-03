@@ -21,7 +21,11 @@
   .pausedbar{flex:0 0 auto;padding:7px 16px;background:#d2992222;border-bottom:1px solid var(--amber);color:var(--amber);font-size:13px}
   .pausedbar button{margin-left:10px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer}
   .question{flex:0 0 auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 16px;background:#1f6feb22;border-bottom:1px solid var(--accent);font-size:13px}
-  .question .qtext{flex:1 1 240px;word-break:break-word}
+  .question .qtext{flex:1 1 240px;word-break:break-word;white-space:pre-wrap}
+  .question .choices{display:flex;flex-wrap:wrap;gap:8px}
+  .question .choices.long{flex:1 1 100%;flex-direction:column;align-items:stretch}
+  .question .choices.long button{text-align:left}
+  .question .choices.long button:hover{border-color:var(--accent)}
   .question input{flex:1 1 180px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:13px}
   .question button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer}
   .question button.primary{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
@@ -403,7 +407,11 @@
     document.getElementById("questionBar").innerHTML = state.questions.map(function (q) {
       var html = '<div class="question" data-q="' + esc(q.id) + '"><span class="qtext"><b>@' + esc(q.agent) + "</b> " + esc(q.title) + (q.message ? ": " + esc(q.message) : "") + "</span>";
       if (q.method === "confirm") html += '<button class="primary" data-confirm="1">Yes</button><button data-confirm="0">No</button>';
-      else if (q.method === "select") html += (q.options || []).map(function (o) { return '<button class="primary" data-value="' + esc(o) + '">' + esc(o) + "</button>"; }).join("");
+      else if (q.method === "select") {
+        var options = q.options || [];
+        var long = options.some(function (o) { return o.length > 40; });
+        html += '<span class="choices' + (long ? " long" : "") + '">' + options.map(function (o) { return "<button" + (long ? "" : ' class="primary"') + ' data-value="' + esc(o) + '">' + esc(o) + "</button>"; }).join("") + "</span>";
+      }
       else html += '<input placeholder="' + esc(q.placeholder || "") + '" value="' + esc(q.prefill || "") + '"><button class="primary" data-send="1">Send</button>';
       return html + '<button data-cancel="1">Dismiss</button></div>';
     }).join("");

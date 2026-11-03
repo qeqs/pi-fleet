@@ -652,4 +652,27 @@ describe("running the fleet", () => {
     await page.click("#stopAllBtn");
     await page.locator("#pausedBar").getByText("stopped by you").waitFor();
   });
+
+  it("lists long choices one per line, and keeps a question's line breaks", async () => {
+    const extensions = [path.join(ROOT, "test", "ask-extension.ts")];
+    const hubDir = path.join(model.tmp, "questionnaire");
+    fs.mkdirSync(hubDir, { recursive: true });
+    fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ defaultModel: MODEL, agents: [{ name: "alice", extensions }] }));
+    const { page, hub } = await open("questionnaire", []);
+    await ready(page, "alice");
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[ask-user]]" });
+    const choices = page.locator(".question .choices.long button");
+    await choices.first().waitFor();
+    expect(await choices.count()).toBe(3);
+    const [first, second] = [await choices.nth(0).boundingBox(), await choices.nth(1).boundingBox()];
+    expect(second!.y).toBeGreaterThan(first!.y + first!.height - 1);
+    await choices.nth(1).click();
+
+    const typed = page.locator(".question input");
+    await typed.waitFor();
+    expect(await page.locator(".question .qtext").innerText()).toContain("1. GUI\n2. CLI\n3. Config");
+    await typed.fill("2");
+    await page.click('.question button[data-send="1"]');
+    await until("the answers", asked("alice", '"Which parts need docs?"="CLI"'));
+  });
 });

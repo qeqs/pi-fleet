@@ -7,6 +7,7 @@
 //                             the planner if there is one, or nobody for agents' messages
 //   [[router-garbage]]     -> as the router, answers with no JSON
 //   [[ask]]                -> calls ask_human (from test/ask-extension.ts)
+//   [[ask-user]]           -> calls ask_user (from test/ask-extension.ts) with two questions
 //   [[guarded]]            -> calls fleet_agents, for testing approvals
 //   [[write file text]]    -> writes a file, then asks the reviewer to look
 //   a merge conflict       -> merges the base into its branch, keeping its own side
@@ -93,6 +94,18 @@ const MARKDOWN = [
   "<img src=x onerror=window.__xss=4>",
 ].join("\n");
 
+const ASK_USER = [
+  {
+    question: "Which direction should we start on next?",
+    header: "Next work",
+    options: [
+      { label: "Prompt caching", description: "Most tokens are context sent again each turn." },
+      { label: "Extensions marketplace", description: "Browse and install pi extensions from the GUI." },
+    ],
+  },
+  { question: "Which parts need docs?", header: "Docs", options: [{ label: "GUI" }, { label: "CLI" }, { label: "Config" }], multiSelect: true },
+];
+
 const say = (text) => ({ kind: "text", text });
 const tool = (name, args) => ({ kind: "tool", name, args });
 
@@ -159,6 +172,7 @@ function decide(agent, messages, model) {
   if (saying) return say(saying[1]);
   if (user.includes("[[md]]")) return say(MARKDOWN);
   if (user.includes("[[ask]]")) return tool("ask_human", {});
+  if (user.includes("[[ask-user]]")) return tool("ask_user", { questions: ASK_USER });
   if (user.includes("[[guarded]]")) return tool("fleet_agents", {});
   if (user.includes("[[hang]]")) return { kind: "hang" };
   if (user.includes("[[fail]]")) return { kind: "fail" };

@@ -22,6 +22,7 @@ import path from "node:path";
 import { onPath } from "../programs.ts";
 import { Hub, shortId, messageTooLong, addressLabel, DEFAULT_CHANNEL, DEFAULT_MAX_HOPS, DEFAULT_MAX_TURNS, MAX_MESSAGE_LEN, type AgentInfo, type FleetMessage, type ChannelConfig, addressedAgents, mentionedAgents } from "../hub.ts";
 import { packageBinArgv } from "../rpc.ts";
+import { answerText, askInDialogs, declinedAll, questionsIn } from "./ask-user.ts";
 
 const POLL_MS = Number(process.env.PI_FLEET_POLL_MS ?? 3000);
 
@@ -521,6 +522,7 @@ export default function (pi: ExtensionAPI) {
   const handedTo = new Set<string>(); // who has work from this agent, since the last wake
   const doubted = new Set<string>(); // files it has been warned about, since the last wake
   let braked = false; // the fleet has stopped this run
+  let dialogShown = false; // since ask_user was called
   const retryWaits = (process.env.PI_FLEET_RETRY_WAITS ?? RETRY_WAITS).split(",").filter(Boolean).map(Number);
   let failedRuns = 0; // in a row
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -697,8 +699,21 @@ export default function (pi: ExtensionAPI) {
       const allowed = await ctx.ui.confirm(`Allow ${event.toolName}?`, JSON.stringify(event.input).slice(0, 300), { signal: ctx.signal });
       if (!allowed) return { block: true, reason: "A person declined this tool call." };
     }
+    if (event.toolName === "ask_user") dialogShown = false;
     if (countsAsWork(event.toolName, role)) worked = true;
     return undefined;
+  });
+
+  // pix-ask's ask_user cannot show its questionnaire here, so it reports the questions turned
+  // down without showing them. Ask them as dialogs instead, unless the tool showed one itself.
+  pi.on("ui_prompt_start", (event) => {
+    if (event.kind !== "custom") dialogShown = true;
+  });
+  pi.on("tool_result", async (event, ctx) => {
+    const questions = event.toolName === "ask_user" && !dialogShown && !ctx.signal?.aborted ? questionsIn(event.input) : undefined;
+    if (!questions || !declinedAll(event.details)) return undefined;
+    const result = await askInDialogs(ctx.ui, questions, ctx.signal);
+    return { content: [{ type: "text" as const, text: answerText(result, questions) }], details: result, isError: false };
   });
 
   /** Everyone who can take a planner's work has it. The implementer brings in the reviewer. */

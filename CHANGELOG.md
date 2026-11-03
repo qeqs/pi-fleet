@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Questions an agent asks with `ask_user`, from the pix-ask package, now reach you. pix-ask draws
+  them with a terminal widget that pi's RPC mode cannot show, so each came back as
+  "User cancelled the questionnaire" a millisecond later, unseen. The fleet now asks them one at a
+  time at the top of the GUI and in the terminal, with each choice's description and a way to
+  answer in your own words, and gives the agent your answers in pix-ask's words.
+- In the GUI, long choices are listed one per line, and a question keeps its line breaks.
+
 ## 1.2.1
 
 The first run on a real weak model, `liquid/lfm-2.5-2.6b:free`, looked like success and was not. The

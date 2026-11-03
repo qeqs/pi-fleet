@@ -178,6 +178,7 @@ The first run on a real weak model, `liquid/lfm-2.5-2.6b:free`, ended in a repor
 - [x] Send a planner's code to the implementer: the wake text told it to do the work itself, and nobody reviewed it
 - [x] Count only tool calls that went through: a refused write looked like work to the router and to the refusal
 - [x] Keep watching when the router's own model fails: one 429 ended the watch in silence
+- [x] Show the owner the questions an agent asks with pix-ask's `ask_user`: pi cannot draw them in RPC mode, so each came back declined a millisecond later, unseen
 - [ ] Take a task to `APPROVE` on a real weak model
 
 **Done when:** a crew on a real weak model takes a task to `APPROVE`, with the work in the project folder.
@@ -191,6 +192,7 @@ Not scheduled yet.
 - [ ] Find out which tools agents are missing: the built-in ones were enough in the real runs so far
 - [ ] Spend less on context: about 96% of the tokens in a real run were context sent again on each turn, so try prompt caching on providers that have it
 - [ ] Keep small jobs small: the planner still writes an OpenSpec proposal for a one-page app
+- [ ] Refuse a report sent twice: an agent on the local model sent the same "Done" to the group twice in one run
 - [ ] Publish to the npm registry, which needs the owner's account
 - [ ] Sign the installers, which needs certificates in the owner's name
 

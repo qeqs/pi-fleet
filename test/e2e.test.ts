@@ -803,6 +803,34 @@ describe("fleet end to end", () => {
     await idle(hub, ["alice"]);
   }, 60000);
 
+  it("puts an ask_user questionnaire pi cannot draw in front of the person", async () => {
+    const hubDir = path.join(tmp, "ask-user");
+    fs.mkdirSync(hubDir, { recursive: true });
+    const extensions = [path.join(ROOT, "test", "ask-extension.ts")];
+    fs.writeFileSync(path.join(hubDir, "fleet.json"), JSON.stringify({ agents: [{ name: "alice", extensions }] }));
+    const { hub, port, token } = await startGui("ask-user", []);
+    await idle(hub, ["alice"]);
+    hub.appendMessage({ from: "user", to: "alice", kind: "chat", text: "[[ask-user]]" });
+
+    const first = await until("the first question", async () => (await snapshot(port, token)).questions[0]);
+    expect(first).toMatchObject({ agent: "alice", method: "select", title: "Next work: Which direction should we start on next?" });
+    expect(first.options).toEqual([
+      "Prompt caching — Most tokens are context sent again each turn.",
+      "Extensions marketplace — Browse and install pi extensions from the GUI.",
+      "Answer in my own words",
+    ]);
+    await guiPost(port, token, "/answer", { id: first.id, value: first.options[1] });
+
+    const second = await until("the second question", async () => (await snapshot(port, token)).questions.find((q: { id: string }) => q.id !== first.id));
+    expect(second).toMatchObject({ method: "input" });
+    expect(second.title).toContain("1. GUI\n2. CLI\n3. Config");
+    await guiPost(port, token, "/answer", { id: second.id, value: "3, gui" });
+
+    const told = 'User answered: "Which direction should we start on next?"="Extensions marketplace". "Which parts need docs?"="Config, GUI".';
+    await until("the agent to get both answers", async () => (await llmLog()).find((r) => r.agent === "alice" && r.conversation.includes(told)));
+    await idle(hub, ["alice"]);
+  }, 60000);
+
   it("makes approved tools wait for a person, and blocks what a person declines", async () => {
     const { hub, port, token } = await startGui("approve", ["--agent", "alice", "--approve", "fleet_agents"]);
     await idle(hub, ["alice"]);

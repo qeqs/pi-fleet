@@ -15,6 +15,14 @@ fault that goes to the next release: a run that hands off and never ends.
 The rules of the 1.0 goal below still apply. New ideas go into **Next** in `ROADMAP.md`.
 
 ## Progress log
+- 2026-11-03: `v1.2.3` released, so the owner sees the questions agents ask with pix-ask's `ask_user`.
+  `v1.2.2` was tagged and never published: its Release workflow found that `npm install -g` from
+  GitHub ignores the shrinkwrap and took pi 1.5.0, out the day before, which no longer exports
+  TypeBox's `Type`, so `fleet` would not start. 1.2.1 installed that way breaks too. pi is pinned to
+  1.4.0, the install from git was checked locally before tagging, and the Release workflow passed on
+  each system. The published Windows installer, with its digest checked, went onto the owner's
+  machine, and the desktop tests passed against it. CI on `main` failed once on Windows: three
+  processes writing channels at once lost 4 of 45 updates, which is in **Next**.
 - 2026-11-02: `v1.2.1` released with the fixes below. The Release workflow finished a task with each
   form of the install on each system, and the published Windows installer, with its digest checked,
   went onto a real machine, where the app opens a project and leaves nothing running when closed.

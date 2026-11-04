@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { TSX, until } from "./support.ts";
 
 let dir: string;
 let hub: Hub;
@@ -462,6 +463,53 @@ describe("channel writes across processes", () => {
     await Promise.all(procs.map((p) => new Promise((resolve) => p.on("exit", resolve))));
     expect(hub.readChannels()).toHaveLength(45);
   }, 30000);
+});
+
+describe("the hub lock", () => {
+  const lockFile = () => `${hub.agentsFile}.lock`;
+  const sleeper = () => spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+
+  it("waits for a live holder, however long it takes", async () => {
+    // a writer that had waited 2 seconds used to take the lock while its holder was still writing
+    const holder = sleeper();
+    const token = `${holder.pid} 0 held`;
+    fs.writeFileSync(lockFile(), token);
+    const ready = path.join(dir, "ready");
+    const writer = spawn(process.execPath, [TSX, path.join(__dirname, "hub-worker.ts"), dir, "w", ready], { stdio: "ignore" });
+    const done = new Promise((resolve) => writer.on("exit", resolve));
+    await until("the writer to start", () => fs.existsSync(ready), 20000);
+    await new Promise((r) => setTimeout(r, 3000));
+    expect(fs.readFileSync(lockFile(), "utf8")).toBe(token);
+    expect(hub.readChannels()).toEqual([]);
+    fs.unlinkSync(lockFile());
+    await done;
+    expect(hub.readChannels()).toHaveLength(15);
+    holder.kill();
+  }, 30000);
+
+  it("takes the lock of a holder that died", () => {
+    fs.writeFileSync(lockFile(), "999999999 0 dead");
+    hub.upsertChannel({ name: "dev", members: [] });
+    expect(hub.getChannel("dev")).toBeDefined();
+    expect(fs.existsSync(lockFile())).toBe(false);
+  });
+
+  it("takes a lock held far too long", () => {
+    const holder = sleeper();
+    fs.writeFileSync(lockFile(), `${holder.pid} 0 hung`);
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(lockFile(), old, old);
+    hub.upsertChannel({ name: "dev", members: [] });
+    expect(hub.getChannel("dev")).toBeDefined();
+    holder.kill();
+  });
+
+  it("leaves a lock that is no longer its own", () => {
+    // as if this writer had hung, lost its lock as stale, and another writer had taken it
+    const channel = { name: "dev", members: [], get supervisor() { fs.writeFileSync(lockFile(), "1 0 other"); return undefined; } };
+    hub.upsertChannel(channel);
+    expect(fs.readFileSync(lockFile(), "utf8")).toBe("1 0 other");
+  });
 });
 
 describe("rotation", () => {

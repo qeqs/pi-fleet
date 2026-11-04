@@ -179,6 +179,7 @@ The first run on a real weak model, `liquid/lfm-2.5-2.6b:free`, ended in a repor
 - [x] Count only tool calls that went through: a refused write looked like work to the router and to the refusal
 - [x] Keep watching when the router's own model fails: one 429 ended the watch in silence
 - [x] Show the owner the questions an agent asks with pix-ask's `ask_user`: pi cannot draw them in RPC mode, so each came back declined a millisecond later, unseen
+- [x] Break only a stale hub lock: a writer that had waited 2 seconds took the lock from a live holder, and a loaded Windows CI run lost 4 of 45 channel updates
 - [ ] Take a task to `APPROVE` on a real weak model
 
 **Done when:** a crew on a real weak model takes a task to `APPROVE`, with the work in the project folder.
@@ -194,7 +195,6 @@ Not scheduled yet.
 - [ ] Keep small jobs small: the planner still writes an OpenSpec proposal for a one-page app
 - [ ] Refuse a report sent twice: an agent on the local model sent the same "Done" to the group twice in one run
 - [ ] Move to pi 1.5, which replaced TypeBox's `Type` with its own schema builders: pi is pinned to 1.4.0 until then
-- [ ] Break only a stale hub lock: a writer that has waited 2 seconds breaks the lock even while its holder is alive, and then on every retry, so a loaded Windows CI run lost 4 of 45 channel updates
 - [ ] Publish to the npm registry, which needs the owner's account
 - [ ] Sign the installers, which needs certificates in the owner's name
 

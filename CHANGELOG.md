@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Agents and the supervisor no longer lose an update to the registry or the channels when they
+  write at once on a busy machine. A writer that had waited 2 seconds for the lock took it, even
+  while its holder was still writing. Now it waits for a live holder and takes the lock only from
+  one that died, or that has held it for over 10 seconds. A crashed holder's lock goes at once
+  instead of after 2 seconds, and on Windows a brief refusal to create the lock is retried instead
+  of failing the write.
+
 ## 1.2.3
 
 1.2.2 was tagged and never published: its release check found that installing with npm from GitHub

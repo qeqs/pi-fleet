@@ -43,6 +43,9 @@ const HOP_WINDOW = 2000;
 /** How long (ms) a shared file may stay locked by readers before a write gives up. */
 const REPLACE_TIMEOUT_MS = 1500;
 
+/** A lock older than this was left by a holder that hung: a write takes milliseconds. */
+const LOCK_STALE_MS = 10000;
+
 /**
  * Atomically replace `target`. On Windows the rename fails (EPERM) while any
  * process has the target open, and the supervisor and every agent keep reading
@@ -390,12 +393,16 @@ export class Hub {
   // channels.json concurrently. The write itself is atomic (tmp+rename), but the
   // read-modify-write is not: two agents could read the same state and one's
   // update would be lost. A simple advisory lock file serializes the
-  // critical section. Works cross-platform (O_EXCL create). A stale lock
-  // (holder crashed) is broken after a timeout.
+  // critical section. Works cross-platform (O_EXCL create). The lock file holds
+  // its holder's pid. A writer waits for a live holder however long it takes,
+  // since taking its lock loses an update, and breaks only a stale lock: one
+  // whose holder died, or that is far older than any write.
 
   private get lockFile(): string {
     return this.agentsFile + ".lock";
   }
+
+  private lockToken = "";
 
   private withLock<T>(fn: () => T): T {
     this.acquireLock();
@@ -406,33 +413,57 @@ export class Hub {
     }
   }
 
-  private acquireLock(timeoutMs = 2000): void {
-    const start = Date.now();
+  private acquireLock(): void {
+    const token = `${process.pid} ${Date.now()} ${Math.random().toString(36).slice(2)}`;
+    let refusedSince = 0;
+    let nextCheck = 0;
     for (;;) {
       try {
-        const fd = fs.openSync(this.lockFile, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-        fs.closeSync(fd);
+        fs.writeFileSync(this.lockFile, token, { flag: "wx" });
+        this.lockToken = token;
         return;
       } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-        if (Date.now() - start > timeoutMs) {
-          try {
-            fs.unlinkSync(this.lockFile); // break a stale lock
-          } catch {
-            // ignore
-          }
-          continue;
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "EEXIST") refusedSince = 0;
+        else {
+          // Windows refuses to create a file while another process is deleting it
+          if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") throw e;
+          refusedSince ||= Date.now();
+          if (Date.now() - refusedSince > REPLACE_TIMEOUT_MS) throw e;
+        }
+        if (Date.now() >= nextCheck) {
+          this.breakStaleLock();
+          nextCheck = Date.now() + 100;
         }
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10); // ~10ms sleep
       }
     }
   }
 
-  private releaseLock(): void {
+  private breakStaleLock(): void {
+    let held: string;
+    let age: number;
     try {
-      fs.unlinkSync(this.lockFile);
+      held = fs.readFileSync(this.lockFile, "utf8");
+      age = Date.now() - fs.statSync(this.lockFile).mtimeMs;
     } catch {
-      // ignore
+      return; // released meanwhile
+    }
+    const pid = Number(held.split(" ")[0]);
+    const died = pid > 0 && pid !== process.pid && !isPidAlive(pid);
+    if (died || age > LOCK_STALE_MS) this.removeLock(held);
+  }
+
+  private releaseLock(): void {
+    this.removeLock(this.lockToken);
+  }
+
+  /** Remove the lock only while it still holds `token`, so another writer's lock stays. */
+  private removeLock(token: string): void {
+    try {
+      if (fs.readFileSync(this.lockFile, "utf8") === token) fs.unlinkSync(this.lockFile);
+    } catch {
+      // already gone
     }
   }
 
